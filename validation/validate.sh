@@ -282,7 +282,7 @@ if [ -d "$PROJECT_ROOT/.github/workflows" ]; then
     for excl in $COE_EXCLUDES; do
         COE_GLOB="$COE_GLOB -g !$excl"
     done
-    COE=$(rg "continue-on-error: true" "$PROJECT_ROOT/.github/workflows/" $COE_GLOB --count 2>/dev/null | awk -F: '{sum+=\$2} END {print sum+0}')
+    COE=$(rg "continue-on-error: true" "$PROJECT_ROOT/.github/workflows/" $COE_GLOB --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
     if [ "$COE" -gt 0 ]; then
         fail_validation "Found $COE continue-on-error: true in CI workflows"
     else
