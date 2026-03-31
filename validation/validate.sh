@@ -274,15 +274,16 @@ fi
 # ============================================================================
 if [ -d "$PROJECT_ROOT/.github/workflows" ]; then
     echo -e "${BLUE}Checking CI integrity...${NC}"
+    # Count continue-on-error, excluding comments and excluded workflows
     COE_EXCLUDES=""
     if [ -f "$LOCAL_PATTERNS_FILE" ]; then
         COE_EXCLUDES=$(grep "exclude_workflows" "$LOCAL_PATTERNS_FILE" 2>/dev/null | sed 's/.*\[//' | sed 's/\]//' | tr -d '"' | tr ',' '\n' | sed 's/^ //' || echo "")
     fi
-    COE_GLOB=""
+    COE_RESULT=$(rg "continue-on-error: true" "$PROJECT_ROOT/.github/workflows/" 2>/dev/null | grep -v "^\s*#" || true)
     for excl in $COE_EXCLUDES; do
-        COE_GLOB="$COE_GLOB -g !$excl"
+        COE_RESULT=$(echo "$COE_RESULT" | grep -v "$excl" || true)
     done
-    COE=$(rg "continue-on-error: true" "$PROJECT_ROOT/.github/workflows/" $COE_GLOB 2>/dev/null | rg -v "^\s*#" | wc -l | tr -d ' ')
+    COE=$(echo "$COE_RESULT" | grep -c "continue-on-error" || echo 0)
     if [ "$COE" -gt 0 ]; then
         fail_validation "Found $COE continue-on-error: true in CI workflows"
     else
