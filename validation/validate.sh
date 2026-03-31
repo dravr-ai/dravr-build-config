@@ -252,7 +252,7 @@ print(' '.join(config.get('files', [])))
 " 2>/dev/null || echo "")
         if [ -n "$ALLOWLIST_FILES" ]; then
             for f in $ALLOWLIST_FILES; do
-                COUNT=$(rg '#\[ignore' "$f" --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+                COUNT=$(rg '#\[ignore' "$f" -c 2>/dev/null || echo 0)
                 ALLOWED_IGNORED=$((ALLOWED_IGNORED + COUNT))
             done
         fi
