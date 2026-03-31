@@ -326,3 +326,28 @@ if [ "$VALIDATION_FAILED" = true ]; then
 else
     echo -e "${GREEN}✅ All architectural validations passed${NC}"
 fi
+
+# ============================================================================
+# Route file size check (prevent business logic in HTTP handlers)
+# ============================================================================
+ROUTE_PATHS=$(find $SRC_PATHS -path "*/routes/*.rs" -not -name "mod.rs" 2>/dev/null)
+if [ -n "$ROUTE_PATHS" ]; then
+    echo -e "${BLUE}Checking route file sizes...${NC}"
+    ENFORCE_ROUTE_SIZE=$(grep "enforce_route_size_limit.*true" "$LOCAL_PATTERNS_FILE" 2>/dev/null | wc -l | tr -d ' ')
+    OVERSIZED=0
+    for route_file in $ROUTE_PATHS; do
+        LINES=$(wc -l < "$route_file" | tr -d ' ')
+        if [ "$LINES" -gt 500 ]; then
+            OVERSIZED=$((OVERSIZED + 1))
+            SHORT=$(echo "$route_file" | sed "s|.*/routes/|routes/|")
+            if [ "${ENFORCE_ROUTE_SIZE:-0}" -gt 0 ]; then
+                fail_validation "Route $SHORT is $LINES lines — extract business logic to services/"
+            else
+                warn_validation "Route $SHORT is $LINES lines — consider extracting business logic to services/"
+            fi
+        fi
+    done
+    if [ "$OVERSIZED" -eq 0 ]; then
+        pass_validation "All route files under 500 lines"
+    fi
+fi
