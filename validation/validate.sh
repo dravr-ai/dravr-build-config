@@ -196,12 +196,17 @@ else
 fi
 
 # ============================================================================
-# #[cfg(test)] in src (advisory — inline tests are idiomatic for unit tests)
+# #[cfg(test)] in src (warning by default, error if local config enforces it)
 # ============================================================================
 echo -e "${BLUE}Checking for inline test modules...${NC}"
 CFG_TEST=$(rg "#\[cfg\(test\)\]" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+ENFORCE_NO_CFG_TEST=$(grep "enforce_no_cfg_test.*true" "$LOCAL_PATTERNS_FILE" 2>/dev/null | wc -l | tr -d ' ')
 if [ "$CFG_TEST" -gt 0 ]; then
-    warn_validation "Found $CFG_TEST #[cfg(test)] in src/ — consider external tests/ for integration tests"
+    if [ "${ENFORCE_NO_CFG_TEST:-0}" -gt 0 ]; then
+        fail_validation "Found $CFG_TEST #[cfg(test)] in src/ — tests go in external tests/ directory"
+    else
+        warn_validation "Found $CFG_TEST #[cfg(test)] in src/ — consider external tests/ for integration tests"
+    fi
 else
     pass_validation "No inline test modules"
 fi
