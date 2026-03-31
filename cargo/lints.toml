@@ -1,0 +1,87 @@
+# Dravr Canonical Lint Configuration
+# Source: dravr-build-config/cargo/lints.toml
+# Copy into your Cargo.toml [workspace.lints.clippy] or [lints.clippy]
+# Your project may ADD stricter rules but NEVER weaken these.
+
+[workspace.lints.clippy]
+# Base configuration: Enable all clippy lint groups at DENY level (zero tolerance)
+# Priority -1 ensures these are applied first, then specific overrides below
+# All clippy warnings are treated as ERRORS via level = "deny"
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+
+# ============================================================================
+# Critical Denials - Error Handling Anti-Patterns (CLAUDE.md enforcement)
+# ============================================================================
+# These replace the bash script's error handling pattern detection
+
+# DENY: .unwrap() in production code (except test/bin with "// Safe" comments)
+unwrap_used = "deny"
+
+# DENY: .expect() in production code (except test/bin with "// Safe" comments)
+expect_used = "deny"
+
+# DENY: panic!() in production code (only acceptable in tests/bins)
+panic = "deny"
+
+# ============================================================================
+# Allowed Exceptions (Per CLAUDE.md Policy)
+# ============================================================================
+# Type conversion casts - allowed when properly validated
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+
+# Const fn suggestions - clippy suggests const for methods that can't actually be const
+# (e.g., methods using .to_lowercase(), .map_or(), Utc::now(), etc.)
+missing_const_for_fn = "allow"
+
+# Structural patterns - validated separately
+struct_excessive_bools = "allow"
+
+# Long functions - allowed with mandatory documentation comment
+# Script validates: "// Long function:" or "// Safe:" comment required
+too_many_lines = "allow"
+
+# Significant drop tightening - false positives with async lock guards
+# The suggestions given are often syntactically invalid
+significant_drop_tightening = "allow"
+
+# Cognitive complexity - warn on overly complex functions
+# Enforces CLAUDE.md guideline of small, focused functions (max 50 lines)
+cognitive_complexity = "deny"
+
+# ============================================================================
+# Additional Code Quality Lints
+# ============================================================================
+# Catch common performance issues
+clone_on_copy = "warn"
+redundant_clone = "warn"
+
+# Catch async anti-patterns
+await_holding_lock = "warn"
+
+# Catch string allocation inefficiencies
+str_to_string = "deny"
+
+# Module naming - allow repetition for clarity (e.g., error::ErrorKind)
+module_name_repetitions = "allow"
+
+# ============================================================================
+# Rust Idiom Enforcement (Prevent AI-generated regressions)
+# ============================================================================
+# Enforce modern format string syntax: format!("{foo}") not format!("{}", foo)
+uninlined_format_args = "warn"
+
+# Warn on .map().unwrap_or() - should use map_or() or is_some_and() instead
+map_unwrap_or = "warn"
+
+# Enforce `use` imports over inline qualified paths (crate::foo::bar)
+# Idiomatic Rust prefers imports at top of file for readability
+absolute_paths = "deny"
+
+# Disallow anyhow::Context methods - use structured ProviderError types instead
+# Configuration in clippy.toml specifies which methods are banned
+disallowed_methods = "deny"
+

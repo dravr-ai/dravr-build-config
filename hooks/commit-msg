@@ -1,0 +1,29 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 dravr.ai
+# ABOUTME: Commit message format validation
+# ABOUTME: Enforces max 2 lines, no AI attribution
+
+MSG_FILE="$1"
+MSG=$(cat "$MSG_FILE")
+LINE_COUNT=$(echo "$MSG" | wc -l | tr -d ' ')
+
+# Max 2 lines
+if [ "$LINE_COUNT" -gt 2 ]; then
+    echo "❌ ERROR: Commit message too long!"
+    echo ""
+    echo "Found $LINE_COUNT lines. Maximum allowed: 2 lines."
+    echo ""
+    echo "✅ Correct format:"
+    echo "   Line 1: Brief summary (50-72 chars recommended)"
+    echo "   Line 2: Optional detailed description (if needed)"
+    exit 1
+fi
+
+# No AI attribution
+if echo "$MSG" | grep -qiE "Co-Authored-By.*claude|Co-Authored-By.*anthropic|Generated with|🤖"; then
+    echo "❌ ERROR: AI-generated commit signatures are not allowed"
+    exit 1
+fi
+
+echo "✅ Commit message format valid ($LINE_COUNT line(s))"

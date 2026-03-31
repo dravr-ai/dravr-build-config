@@ -1,0 +1,2 @@
+# Dravr shared rustfmt configuration
+edition = "2021"

@@ -1,0 +1,84 @@
+# Dravr Universal Code Quality Validation Patterns
+# Source: dravr-build-config/validation/patterns.toml
+# Version: 1.0
+#
+# These rules apply to ALL dravr-* Rust projects.
+# Project-specific extensions go in validation-patterns.local.toml at repo root.
+
+[meta]
+version = "1.0"
+
+# =================================================================
+# Scan paths — repos override in validation-patterns.local.toml
+# =================================================================
+[scan_paths]
+rust_src = ["src/", "crates/*/src/"]
+rust_tests = ["tests/", "crates/*/tests/"]
+frontend = []
+sdk = []
+
+# =================================================================
+# Placeholder detection — AI agents leave these everywhere
+# =================================================================
+[placeholder_patterns]
+critical = [
+    "Implementation would",
+    "Would implement",
+    "Should implement",
+    "Will implement",
+    "TODO: Implementation",
+    "Available for real implementation",
+    "available for real implementation",
+    "Implement the code",
+    "stub implementation",
+    "stub for now",
+    "stub endpoint",
+    "mock implementation",
+    "placeholder implementation",
+    "placeholder structure",
+    "simplified placeholder",
+    "this is a placeholder",
+    "is a placeholder that",
+    "will be implemented",
+    "to be implemented",
+    "return mock data",
+    "dummy implementation",
+    "not yet implemented",
+    "PLACEHOLDER",
+    "In future versions",
+]
+
+# =================================================================
+# Error handling enforcement
+# =================================================================
+[error_handling]
+anyhow_macro_patterns = "\\banyhow!\\(|anyhow::anyhow!\\("
+anyhow_import_patterns = "use anyhow::\\{|use anyhow::anyhow|use anyhow::bail|use anyhow::ensure"
+anyhow_type_patterns = "anyhow::Result|anyhow::Error"
+
+# =================================================================
+# Naming conventions
+# =================================================================
+[naming]
+underscore_pattern = "fn _[a-zA-Z]|let _[a-zA-Z]|struct _[a-zA-Z]|enum _[a-zA-Z]"
+
+# =================================================================
+# Clippy allow attributes — only these are permitted
+# =================================================================
+[clippy_allows]
+allowed = "cast_possible_truncation|cast_sign_loss|cast_precision_loss|cast_possible_wrap|struct_excessive_bools|too_many_lines|let_unit_value|option_if_let_else|cognitive_complexity|bool_to_int_with_if|type_complexity|too_many_arguments|use_self"
+
+# =================================================================
+# Code quality
+# =================================================================
+[code_quality]
+todo_patterns = "TODO|FIXME|XXX"
+mock_patterns = "mock_|get_mock|return.*mock|demo purposes|for demo|stub implementation|mock implementation"
+temp_patterns = "\\bhack\\b|\\bworkaround\\b|\\bquick.*fix\\b|future.*implementation|temporary.*solution|temp.*fix"
+
+# =================================================================
+# Test integrity
+# =================================================================
+[test_integrity]
+js_skip_patterns = "\\.skip\\(|xit\\(|xdescribe\\(|test\\.skip\\("
+js_placeholder_patterns = "In a full E2E test, we would|testing infrastructure ready|testing ready|validation infrastructure ready"

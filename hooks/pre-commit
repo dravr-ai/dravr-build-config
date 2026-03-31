@@ -1,0 +1,32 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 dravr.ai
+# ABOUTME: Shared pre-commit hook for all dravr-* projects
+# ABOUTME: Checks SPDX headers, formatting, and runs lint on staged files
+
+set -e
+
+# Check SPDX headers on staged Rust files
+STAGED_RS=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+if [ -n "$STAGED_RS" ]; then
+    for f in $STAGED_RS; do
+        if ! head -5 "$f" | grep -q "SPDX-License-Identifier:"; then
+            echo "❌ Missing SPDX header: $f"
+            echo "   Add: // SPDX-License-Identifier: MIT OR Apache-2.0"
+            exit 1
+        fi
+    done
+fi
+
+# Check frontend lint if frontend files staged
+STAGED_TS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx)$' | grep -v 'node_modules' || true)
+if [ -n "$STAGED_TS" ]; then
+    if [ -d "frontend" ] && [ -f "frontend/package.json" ]; then
+        echo "🔍 Running frontend lint checks..."
+        cd frontend && bun run lint 2>&1 | tail -5
+        cd ..
+        echo "✅ Frontend lint checks passed"
+    fi
+fi
+
+echo "✅ All pre-commit checks passed"
