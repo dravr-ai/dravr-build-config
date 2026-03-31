@@ -279,7 +279,7 @@ if [ -d "$PROJECT_ROOT/.github/workflows" ]; then
     if [ -f "$LOCAL_PATTERNS_FILE" ]; then
         COE_EXCLUDES=$(grep "exclude_workflows" "$LOCAL_PATTERNS_FILE" 2>/dev/null | sed 's/.*\[//' | sed 's/\]//' | tr -d '"' | tr ',' '\n' | sed 's/^ //' || echo "")
     fi
-    COE_RESULT=$(rg "continue-on-error: true" "$PROJECT_ROOT/.github/workflows/" 2>/dev/null | grep -v "^\s*#" || true)
+    COE_RESULT=$(rg "continue-on-error: true" "$PROJECT_ROOT/.github/workflows/" 2>/dev/null | grep -v "#.*continue-on-error" || true)
     for excl in $COE_EXCLUDES; do
         COE_RESULT=$(echo "$COE_RESULT" | grep -v "$excl" || true)
     done
