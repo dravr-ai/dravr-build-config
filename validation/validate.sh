@@ -315,19 +315,6 @@ if [ -n "$FRONTEND_PATHS" ]; then
 fi
 
 # ============================================================================
-# Summary
-# ============================================================================
-echo ""
-echo -e "${BLUE}==== Architectural Validation Summary ====${NC}"
-if [ "$VALIDATION_FAILED" = true ]; then
-    echo -e "${RED}❌ Architectural validation FAILED${NC}"
-    echo -e "${RED}Fix critical issues above before deployment${NC}"
-    exit 1
-else
-    echo -e "${GREEN}✅ All architectural validations passed${NC}"
-fi
-
-# ============================================================================
 # Route file size check (prevent business logic in HTTP handlers)
 # ============================================================================
 ROUTE_PATHS=$(find $SRC_PATHS -path "*/routes/*.rs" -not -name "mod.rs" 2>/dev/null)
@@ -350,4 +337,17 @@ if [ -n "$ROUTE_PATHS" ]; then
     if [ "$OVERSIZED" -eq 0 ]; then
         pass_validation "All route files under 500 lines"
     fi
+fi
+
+# ============================================================================
+# Summary
+# ============================================================================
+echo ""
+echo -e "${BLUE}==== Architectural Validation Summary ====${NC}"
+if [ "$VALIDATION_FAILED" = true ]; then
+    echo -e "${RED}❌ Architectural validation FAILED${NC}"
+    echo -e "${RED}Fix critical issues above before deployment${NC}"
+    exit 1
+else
+    echo -e "${GREEN}✅ All architectural validations passed${NC}"
 fi
