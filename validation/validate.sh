@@ -196,14 +196,14 @@ else
 fi
 
 # ============================================================================
-# #[cfg(test)] in src (tests belong in tests/)
+# #[cfg(test)] in src (advisory — inline tests are idiomatic for unit tests)
 # ============================================================================
-echo -e "${BLUE}Checking for test modules in src...${NC}"
+echo -e "${BLUE}Checking for inline test modules...${NC}"
 CFG_TEST=$(rg "#\[cfg\(test\)\]" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
 if [ "$CFG_TEST" -gt 0 ]; then
-    fail_validation "Found $CFG_TEST #[cfg(test)] in src/ — tests go in tests/ directory"
+    warn_validation "Found $CFG_TEST #[cfg(test)] in src/ — consider external tests/ for integration tests"
 else
-    pass_validation "No test modules in src"
+    pass_validation "No inline test modules"
 fi
 
 # ============================================================================
