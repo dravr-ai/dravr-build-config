@@ -15,6 +15,9 @@ ln -sf .build/cargo/rustfmt.toml rustfmt.toml
 
 # Run validation
 .build/validation/validate.sh
+
+# Append shared AI-agent discipline rules to your AGENTS.md
+cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
 ```
 
 ## Structure
@@ -23,6 +26,7 @@ ln -sf .build/cargo/rustfmt.toml rustfmt.toml
 - `validation/` — Architectural validation script + pattern definitions
 - `hooks/` — Git hooks (pre-commit, commit-msg)
 - `ci/` — Reusable CI helpers
+- `docs/AGENTS_DISCIPLINE.md` — Shared architectural discipline rules for AI agents
 
 ## Extending
 
