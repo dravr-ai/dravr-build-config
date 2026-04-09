@@ -1,54 +1,77 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
-# ABOUTME: Pre-push hook enforcing validation marker from pre-push-validate.sh
-# ABOUTME: Rejects push if marker is missing, stale (>15 min), or from a different commit
+# ABOUTME: Pre-push hook — runs clippy inline or checks validation marker
+# ABOUTME: Works for all dravr-* repos whether they have pre-push-validate.sh or not
 
 set -e
 
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
 GIT_DIR="$(git rev-parse --git-dir)"
 MARKER_FILE="$GIT_DIR/validation-passed"
 VALIDATION_TTL_MINUTES=15
+VALIDATE_SCRIPT="$PROJECT_ROOT/scripts/ci/pre-push-validate.sh"
 
-if [ ! -f "$MARKER_FILE" ]; then
-    echo ""
-    echo "BLOCKED: No validation marker found."
-    echo ""
-    echo "Run before pushing:"
-    echo "  ./scripts/ci/pre-push-validate.sh"
-    echo ""
-    exit 1
+# If the project has pre-push-validate.sh, enforce the marker system.
+# Otherwise, run clippy directly as the gate.
+if [ -f "$VALIDATE_SCRIPT" ]; then
+    # ---- Marker-based validation (dravr-platform) ----
+    if [ ! -f "$MARKER_FILE" ]; then
+        echo ""
+        echo "BLOCKED: No validation marker found."
+        echo ""
+        echo "Run before pushing:"
+        echo "  ./scripts/ci/pre-push-validate.sh"
+        echo ""
+        exit 1
+    fi
+
+    read -r MARKER_TIME MARKER_COMMIT < "$MARKER_FILE"
+    CURRENT_COMMIT=$(git rev-parse HEAD)
+    CURRENT_TIME=$(date +%s)
+
+    if [ "$MARKER_COMMIT" != "$CURRENT_COMMIT" ]; then
+        echo ""
+        echo "BLOCKED: Validation marker is for a different commit."
+        echo "  Marker:  ${MARKER_COMMIT:0:12}"
+        echo "  Current: ${CURRENT_COMMIT:0:12}"
+        echo ""
+        echo "Re-run: ./scripts/ci/pre-push-validate.sh"
+        echo ""
+        exit 1
+    fi
+
+    ELAPSED=$(( CURRENT_TIME - MARKER_TIME ))
+    TTL_SECONDS=$(( VALIDATION_TTL_MINUTES * 60 ))
+
+    if [ "$ELAPSED" -gt "$TTL_SECONDS" ]; then
+        ELAPSED_MIN=$(( ELAPSED / 60 ))
+        echo ""
+        echo "BLOCKED: Validation marker expired (${ELAPSED_MIN}m old, max ${VALIDATION_TTL_MINUTES}m)."
+        echo ""
+        echo "Re-run: ./scripts/ci/pre-push-validate.sh"
+        echo ""
+        exit 1
+    fi
+
+    echo "Validation marker OK (${ELAPSED}s old, commit ${CURRENT_COMMIT:0:12})"
+else
+    # ---- Inline validation (smaller dravr-* crates) ----
+    # Check if this is a Rust project
+    if [ -f "$PROJECT_ROOT/Cargo.toml" ]; then
+        echo "Pre-push: running cargo fmt check..."
+        if ! cargo fmt --all -- --check > /dev/null 2>&1; then
+            echo "BLOCKED: Code not formatted. Run: cargo fmt --all"
+            exit 1
+        fi
+
+        echo "Pre-push: running cargo clippy --all-targets --all-features..."
+        if ! cargo clippy --all-targets --all-features -- -D warnings 2>&1; then
+            echo ""
+            echo "BLOCKED: Clippy failed. Fix all warnings before pushing."
+            exit 1
+        fi
+
+        echo "Pre-push: OK"
+    fi
 fi
-
-# Read marker: "timestamp commit_hash"
-read -r MARKER_TIME MARKER_COMMIT < "$MARKER_FILE"
-CURRENT_COMMIT=$(git rev-parse HEAD)
-CURRENT_TIME=$(date +%s)
-
-# Check commit matches
-if [ "$MARKER_COMMIT" != "$CURRENT_COMMIT" ]; then
-    echo ""
-    echo "BLOCKED: Validation marker is for a different commit."
-    echo "  Marker:  ${MARKER_COMMIT:0:12}"
-    echo "  Current: ${CURRENT_COMMIT:0:12}"
-    echo ""
-    echo "Re-run: ./scripts/ci/pre-push-validate.sh"
-    echo ""
-    exit 1
-fi
-
-# Check marker freshness
-ELAPSED=$(( CURRENT_TIME - MARKER_TIME ))
-TTL_SECONDS=$(( VALIDATION_TTL_MINUTES * 60 ))
-
-if [ "$ELAPSED" -gt "$TTL_SECONDS" ]; then
-    ELAPSED_MIN=$(( ELAPSED / 60 ))
-    echo ""
-    echo "BLOCKED: Validation marker expired (${ELAPSED_MIN}m old, max ${VALIDATION_TTL_MINUTES}m)."
-    echo ""
-    echo "Re-run: ./scripts/ci/pre-push-validate.sh"
-    echo ""
-    exit 1
-fi
-
-echo "Validation marker OK (${ELAPSED}s old, commit ${CURRENT_COMMIT:0:12})"
