@@ -13,9 +13,9 @@ VALIDATION_TTL_MINUTES=15
 VALIDATE_SCRIPT="$PROJECT_ROOT/scripts/ci/pre-push-validate.sh"
 
 # If the project has pre-push-validate.sh, enforce the marker system.
-# Otherwise, run clippy directly as the gate.
+# Otherwise, run an inline clippy gate scoped to changed crates.
 if [ -f "$VALIDATE_SCRIPT" ]; then
-    # ---- Marker-based validation (dravr-platform) ----
+    # ---- Marker-based validation (dravr-platform and similar) ----
     if [ ! -f "$MARKER_FILE" ]; then
         echo ""
         echo "BLOCKED: No validation marker found."
@@ -55,23 +55,76 @@ if [ -f "$VALIDATE_SCRIPT" ]; then
     fi
 
     echo "Validation marker OK (${ELAPSED}s old, commit ${CURRENT_COMMIT:0:12})"
+    exit 0
+fi
+
+# ---- Inline validation (fallback for repos without pre-push-validate.sh) ----
+[ ! -f "$PROJECT_ROOT/Cargo.toml" ] && exit 0
+
+cd "$PROJECT_ROOT"
+
+echo "Pre-push: cargo fmt --check..."
+if ! cargo fmt --all -- --check > /dev/null 2>&1; then
+    echo "BLOCKED: Code not formatted. Run: cargo fmt --all"
+    exit 1
+fi
+
+# Detect whether this is a Cargo workspace with crates/ layout
+IS_WORKSPACE=false
+if grep -q "^\[workspace\]" "$PROJECT_ROOT/Cargo.toml" 2>/dev/null && [ -d "$PROJECT_ROOT/crates" ]; then
+    IS_WORKSPACE=true
+fi
+
+if [ "$IS_WORKSPACE" = true ]; then
+    # Workspace: scope clippy to crates whose files changed (fast local gate).
+    # CI runs full workspace clippy — this is intentionally narrower.
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    if git rev-parse --verify "origin/$CURRENT_BRANCH" &>/dev/null; then
+        BASE_REF="origin/$CURRENT_BRANCH"
+    elif git rev-parse --verify "origin/main" &>/dev/null; then
+        BASE_REF="origin/main"
+    else
+        BASE_REF="HEAD~1"
+    fi
+    CHANGED_FILES=$(git diff --name-only "$BASE_REF" HEAD 2>/dev/null || echo "")
+
+    declare -A CHANGED_CRATES
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        case "$file" in
+            crates/*)
+                crate_dir="${file#crates/}"
+                crate_dir="${crate_dir%%/*}"
+                if [ -n "$crate_dir" ] && [ -d "$PROJECT_ROOT/crates/$crate_dir" ]; then
+                    CHANGED_CRATES["$crate_dir"]=1
+                fi
+                ;;
+        esac
+    done <<< "$CHANGED_FILES"
+
+    if [ ${#CHANGED_CRATES[@]} -eq 0 ]; then
+        echo "Pre-push: no crate changes detected, skipping clippy (CI will run full workspace clippy)"
+    else
+        for crate_dir in "${!CHANGED_CRATES[@]}"; do
+            crate_toml="$PROJECT_ROOT/crates/$crate_dir/Cargo.toml"
+            pkg=$(grep -m1 '^name[[:space:]]*=' "$crate_toml" 2>/dev/null | sed -E 's/name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+            [ -z "$pkg" ] && pkg="$crate_dir"
+            echo "Pre-push: clippy -p $pkg --all-targets --all-features"
+            if ! cargo clippy -p "$pkg" --all-targets --all-features -- -D warnings; then
+                echo ""
+                echo "BLOCKED: Clippy failed for $pkg. Fix warnings before pushing."
+                exit 1
+            fi
+        done
+    fi
 else
-    # ---- Inline validation (smaller dravr-* crates) ----
-    # Check if this is a Rust project
-    if [ -f "$PROJECT_ROOT/Cargo.toml" ]; then
-        echo "Pre-push: running cargo fmt check..."
-        if ! cargo fmt --all -- --check > /dev/null 2>&1; then
-            echo "BLOCKED: Code not formatted. Run: cargo fmt --all"
-            exit 1
-        fi
-
-        echo "Pre-push: running cargo clippy --all-targets --all-features..."
-        if ! cargo clippy --all-targets --all-features -- -D warnings 2>&1; then
-            echo ""
-            echo "BLOCKED: Clippy failed. Fix all warnings before pushing."
-            exit 1
-        fi
-
-        echo "Pre-push: OK"
+    # Single-crate repo — full clippy is the per-crate case.
+    echo "Pre-push: cargo clippy --all-targets --all-features..."
+    if ! cargo clippy --all-targets --all-features -- -D warnings 2>&1; then
+        echo ""
+        echo "BLOCKED: Clippy failed. Fix all warnings before pushing."
+        exit 1
     fi
 fi
+
+echo "Pre-push: OK"
