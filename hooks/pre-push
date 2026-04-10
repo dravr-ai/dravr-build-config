@@ -88,7 +88,8 @@ if [ "$IS_WORKSPACE" = true ]; then
     fi
     CHANGED_FILES=$(git diff --name-only "$BASE_REF" HEAD 2>/dev/null || echo "")
 
-    declare -A CHANGED_CRATES
+    # Collect unique changed crate directories (bash 3.2 compatible — no associative arrays)
+    CHANGED_CRATES=""
     while IFS= read -r file; do
         [ -z "$file" ] && continue
         case "$file" in
@@ -96,16 +97,21 @@ if [ "$IS_WORKSPACE" = true ]; then
                 crate_dir="${file#crates/}"
                 crate_dir="${crate_dir%%/*}"
                 if [ -n "$crate_dir" ] && [ -d "$PROJECT_ROOT/crates/$crate_dir" ]; then
-                    CHANGED_CRATES["$crate_dir"]=1
+                    case " $CHANGED_CRATES " in
+                        *" $crate_dir "*) ;;
+                        *) CHANGED_CRATES="$CHANGED_CRATES $crate_dir" ;;
+                    esac
                 fi
                 ;;
         esac
     done <<< "$CHANGED_FILES"
 
-    if [ ${#CHANGED_CRATES[@]} -eq 0 ]; then
+    CHANGED_CRATES="${CHANGED_CRATES# }"
+
+    if [ -z "$CHANGED_CRATES" ]; then
         echo "Pre-push: no crate changes detected, skipping clippy (CI will run full workspace clippy)"
     else
-        for crate_dir in "${!CHANGED_CRATES[@]}"; do
+        for crate_dir in $CHANGED_CRATES; do
             crate_toml="$PROJECT_ROOT/crates/$crate_dir/Cargo.toml"
             pkg=$(grep -m1 '^name[[:space:]]*=' "$crate_toml" 2>/dev/null | sed -E 's/name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
             [ -z "$pkg" ] && pkg="$crate_dir"
