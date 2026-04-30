@@ -164,9 +164,12 @@ fi
 
 # ============================================================================
 # Forbidden clippy allows
+# Catches both standalone `#[allow(clippy::xxx)]` and combined-form
+# `#[allow(dead_code, clippy::xxx, clippy::yyy)]` by tokenizing each allow body
+# on commas and checking each `clippy::*` token against the allowlist.
 # ============================================================================
 echo -e "${BLUE}Checking for unauthorized #[allow(clippy::...)]...${NC}"
-ALLOWED_CLIPPY="cast_possible_truncation|cast_sign_loss|cast_precision_loss|cast_possible_wrap|struct_excessive_bools|too_many_lines|let_unit_value|option_if_let_else|cognitive_complexity|bool_to_int_with_if|type_complexity|too_many_arguments|use_self|trivially_copy_pass_by_ref"
+ALLOWED_CLIPPY="cast_possible_truncation|cast_sign_loss|cast_precision_loss|cast_possible_wrap|struct_excessive_bools|too_many_lines|let_unit_value|option_if_let_else|cognitive_complexity|bool_to_int_with_if|type_complexity|too_many_arguments|use_self|trivially_copy_pass_by_ref|missing_const_for_fn"
 
 # Load local extensions if present
 if [ -f "$LOCAL_PATTERNS_FILE" ]; then
@@ -176,23 +179,50 @@ if [ -f "$LOCAL_PATTERNS_FILE" ]; then
     fi
 fi
 
-CLIPPY_ALLOWS=$(rg "#\[allow\(clippy::" $SRC_PATHS -g "!*/bin/*" 2>/dev/null | grep -v -E "$ALLOWED_CLIPPY" | wc -l | tr -d ' ')
+CLIPPY_ALLOWS=$(rg "#\[allow\(" $SRC_PATHS -g "!*/bin/*" -o -r '$0' --no-line-number 2>/dev/null \
+    | sed -E 's/^.*#\[allow\(//; s/\)\].*$//' \
+    | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | grep '^clippy::' \
+    | grep -v -E "^clippy::($ALLOWED_CLIPPY)$" \
+    | wc -l | tr -d ' ')
 if [ "${CLIPPY_ALLOWS:-0}" -gt 0 ]; then
     fail_validation "Found $CLIPPY_ALLOWS unauthorized #[allow(clippy::)] attributes"
-    rg "#\[allow\(clippy::" $SRC_PATHS -g "!*/bin/*" -n 2>/dev/null | grep -v -E "$ALLOWED_CLIPPY" | head -5
+    rg "#\[allow\(" $SRC_PATHS -g "!*/bin/*" -n 2>/dev/null \
+        | grep -E "clippy::" \
+        | grep -v -E "$ALLOWED_CLIPPY" \
+        | head -5
 else
     pass_validation "No unauthorized clippy allows"
 fi
 
 # ============================================================================
 # Dead code annotations
+# Catches combined-form `#[allow(dead_code, clippy::xxx)]` as well as the bare form.
 # ============================================================================
 echo -e "${BLUE}Checking for dead code hiding...${NC}"
-DEAD_CODE=$(rg "#\[allow\(dead_code\)\]" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+DEAD_CODE=$(rg "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
 if [ "$DEAD_CODE" -gt 0 ]; then
     fail_validation "Found $DEAD_CODE #[allow(dead_code)] — remove the dead code instead"
+    rg "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS -n 2>/dev/null | head -5
 else
     pass_validation "No dead code annotations"
+fi
+
+# ============================================================================
+# Stub-function signature
+# A function carrying both `clippy::unused_self` and `clippy::unnecessary_wraps`
+# is the textbook stub: a method that doesn't use self AND a Result-returning
+# function that never fails. Claude Code tends to leave these behind when it
+# wires up types but skips the implementation. No legitimate function needs
+# both lints suppressed simultaneously — implement it or delete it.
+# ============================================================================
+echo -e "${BLUE}Checking for stub-function clippy-allow signature...${NC}"
+STUB_SIGNATURE_FNS=$(rg -U --multiline '#\[allow\([^)]*(unused_self[^)]*unnecessary_wraps|unnecessary_wraps[^)]*unused_self)' $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+if [ "${STUB_SIGNATURE_FNS:-0}" -gt 0 ]; then
+    fail_validation "Found $STUB_SIGNATURE_FNS stub-disguise function(s) (unused_self + unnecessary_wraps)"
+    rg -U --multiline '#\[allow\([^)]*(unused_self[^)]*unnecessary_wraps|unnecessary_wraps[^)]*unused_self)' $SRC_PATHS -n 2>/dev/null | head -5
+else
+    pass_validation "No stub-function signatures"
 fi
 
 # ============================================================================
