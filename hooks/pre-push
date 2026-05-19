@@ -55,6 +55,10 @@ if [ -f "$VALIDATE_SCRIPT" ]; then
     fi
 
     echo "Validation marker OK (${ELAPSED}s old, commit ${CURRENT_COMMIT:0:12})"
+    echo ""
+    echo "REMINDER: Monitor CI after pushing. The Agent does NOT consider work"
+    echo "complete until CI on the pushed commit is green. See AGENTS.md →"
+    echo "'After Pushing — MANDATORY CI MONITORING'."
     exit 0
 fi
 
@@ -134,3 +138,7 @@ else
 fi
 
 echo "Pre-push: OK"
+echo ""
+echo "REMINDER: Monitor CI after pushing. The Agent does NOT consider work"
+echo "complete until CI on the pushed commit is green. See AGENTS.md →"
+echo "'After Pushing — MANDATORY CI MONITORING'."
