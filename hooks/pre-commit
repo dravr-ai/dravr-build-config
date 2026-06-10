@@ -6,6 +6,18 @@
 
 set -e
 
+# Block Terraform state/plan files. They embed every resolved secret in
+# PLAINTEXT, and because tfplan is a compressed archive, content-based secret
+# scanners (GitHub, gitleaks, trufflehog) cannot see inside it. Filename is the
+# only reliable signal. State belongs in a remote encrypted backend, never git.
+STAGED_TF=$(git diff --cached --name-only --diff-filter=ACM | grep -E -e '(^|/)tfplan([-.]|$)' -e '\.tfstate($|\.)' -e '\.tfplan$' || true)
+if [ -n "$STAGED_TF" ]; then
+    echo "❌ Refusing to commit Terraform state/plan files (they embed plaintext secrets):"
+    echo "$STAGED_TF" | sed 's/^/   /'
+    echo "   Add these to .gitignore and use a remote encrypted backend (GCS/S3)."
+    exit 1
+fi
+
 # Check SPDX headers on staged Rust files
 STAGED_RS=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
 if [ -n "$STAGED_RS" ]; then
