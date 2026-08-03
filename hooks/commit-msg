@@ -2,28 +2,69 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
 # ABOUTME: Commit message format validation
-# ABOUTME: Enforces max 2 lines, no AI attribution
+# ABOUTME: Enforces a <=72-char subject, a blank line 2, and no AI attribution
+
+# Maximum length of the subject line.
+#
+# Git defines the subject as everything up to the first BLANK line — adjacent
+# non-blank lines are JOINED. So capping line 1 alone is not enough: without a
+# blank line 2, `git log --oneline`, `%s` in tooling and the GitHub commit list
+# still render the whole message as one unreadable subject. Both rules below
+# are required; either alone is a no-op for readability.
+MAX_SUBJECT=72
 
 MSG_FILE="$1"
-MSG=$(cat "$MSG_FILE")
-LINE_COUNT=$(echo "$MSG" | wc -l | tr -d ' ')
+# Drop git's template comments and any trailing blank lines before counting.
+BODY=$(grep -v '^#' "$MSG_FILE" | sed -e :a -e '/^\n*$/{$d;N;};/\n$/ba')
+LINE_COUNT=$(printf '%s\n' "$BODY" | wc -l | tr -d ' ')
+SUBJECT=$(printf '%s\n' "$BODY" | sed -n '1p')
+SECOND=$(printf '%s\n' "$BODY" | sed -n '2p')
+SUBJECT_LEN=${#SUBJECT}
 
-# Max 2 lines
-if [ "$LINE_COUNT" -gt 2 ]; then
-    echo "❌ ERROR: Commit message too long!"
-    echo ""
-    echo "Found $LINE_COUNT lines. Maximum allowed: 2 lines."
+usage() {
     echo ""
     echo "✅ Correct format:"
-    echo "   Line 1: Brief summary (50-72 chars recommended)"
-    echo "   Line 2: Optional detailed description (if needed)"
+    echo "   Line 1: Brief summary (<=$MAX_SUBJECT chars)"
+    echo "   Line 2: BLANK"
+    echo "   Line 3+: Optional detail — put the rationale HERE. No length limit."
+    echo ""
+    echo "Example:"
+    echo "   fix(mcp): enforce the Origin allowlist on POST /mcp"
+    echo ""
+    echo "   tronc has carried the allowlist and its 403 since the engine"
+    echo "   extraction, but build_mcp_server never called with_allowed_origins."
+}
+
+# Subject length — the rule that keeps `git log --oneline` scannable.
+if [ "$SUBJECT_LEN" -gt "$MAX_SUBJECT" ]; then
+    echo "❌ ERROR: Subject line too long!"
+    echo ""
+    echo "Line 1 is $SUBJECT_LEN chars. Maximum allowed: $MAX_SUBJECT."
+    usage
+    echo ""
+    echo "Your line 1 begins:"
+    echo "   ${SUBJECT:0:$MAX_SUBJECT}"
+    exit 1
+fi
+
+# Blank line 2 — without it git joins line 1 and line 2 into the subject,
+# which defeats the length cap above.
+if [ "$LINE_COUNT" -gt 1 ] && [ -n "$SECOND" ]; then
+    echo "❌ ERROR: Line 2 must be blank!"
+    echo ""
+    echo "Git treats every line up to the first blank line as the subject, so"
+    echo "text on line 2 is appended to your subject and makes it unreadable."
+    usage
+    echo ""
+    echo "Your line 2 begins:"
+    echo "   ${SECOND:0:$MAX_SUBJECT}"
     exit 1
 fi
 
 # No AI attribution
-if echo "$MSG" | grep -qiE "Co-Authored-By.*claude|Co-Authored-By.*anthropic|Generated with|🤖"; then
+if grep -qiE "Co-Authored-By.*claude|Co-Authored-By.*anthropic|Generated with|🤖" "$MSG_FILE"; then
     echo "❌ ERROR: AI-generated commit signatures are not allowed"
     exit 1
 fi
 
-echo "✅ Commit message format valid ($LINE_COUNT line(s))"
+echo "✅ Commit message format valid (subject $SUBJECT_LEN chars, $LINE_COUNT line(s))"
