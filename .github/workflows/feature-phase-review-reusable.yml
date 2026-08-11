@@ -1,10 +1,10 @@
 # ABOUTME: Reusable weekly review of a caller repo's feature-phases.yaml dark-launch
-# ABOUTME: ledger — opens a private dravr-registre issue per overdue review_by date
+# ABOUTME: ledger — opens a private llm-registre issue per overdue review_by date
 #
-# Issues are filed in the PRIVATE dravr-ai/dravr-registre tracker — most
-# dravr-* repos are public, so review issues (which describe disarmed security
+# Issues are filed in the PRIVATE dravr-ai/llm-registre tracker — most code
+# repos are public, so review issues (which describe disarmed security
 # features) must never land on the code repo itself. The registre token must
-# have issues read/write on dravr-registre; the probe step fails loudly if not.
+# have issues read/write on llm-registre; the probe step fails loudly if not.
 #
 # Caller example (each repo ships feature-phases.yaml at its root):
 #   jobs:
@@ -30,11 +30,11 @@ on:
         type: string
     secrets:
       registre_token:
-        description: "Token with issues read/write on dravr-ai/dravr-registre"
+        description: "Token with issues read/write on dravr-ai/llm-registre"
         required: true
 
 env:
-  REGISTRE: dravr-ai/dravr-registre
+  REGISTRE: dravr-ai/llm-registre
 
 jobs:
   review:
@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh issue list -R "$REGISTRE" --limit 1 >/dev/null 2>&1; then
-            echo "::error::registre_token cannot read $REGISTRE — grant the token access to dravr-registre (issues read/write)."
+            echo "::error::registre_token cannot read $REGISTRE — grant the token access to llm-registre (issues read/write)."
             exit 1
           fi
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
-# ABOUTME: Shared limitation-register gates for all dravr-* repos: deferral/confession
-# ABOUTME: prose ban, LIMITATION(registre#n) marker format, feature-phase ledger format
+# ABOUTME: Shared limitation-register gates for every repo jf works in: deferral/
+# ABOUTME: confession prose ban, LIMITATION(registre#n) format, feature-phase ledger
 
 # WHY: an honest gap documented in a factually-worded comment is invisible debt —
 # dravr-platform's 2026-08 audit found a text-budget floor and a whole capability
@@ -11,9 +11,11 @@
 #
 #   LIMITATION(registre#<issue>): <the limited item, named on this line>
 #
-# backed by an issue in the PRIVATE dravr-ai/dravr-registre tracker (label
-# `limitation` + a label naming the repo). Most dravr-* repos are PUBLIC —
-# internal gaps and security residuals never go on the code repo's own tracker.
+# backed by an issue in the PRIVATE dravr-ai/llm-registre tracker (label
+# `limitation` + a label naming the repo). llm-registre is the ONE tracker for
+# every project — dravr-* and everything else — so the debt inventory is a
+# single query. Most code repos are PUBLIC: internal gaps and security
+# residuals never go on the code repo's own tracker.
 #
 # Gates:
 #   1. Deferral/confession prose ("for now, return", "not yet implemented",
@@ -100,7 +102,7 @@ BAD_MARKER_COUNT=$(printf '%s' "$BAD_MARKERS" | grep -c . 2>/dev/null || true)
 if [ "${BAD_MARKER_COUNT:-0}" -gt 0 ]; then
     echo -e "${RED}Malformed LIMITATION marker(s) — required form: LIMITATION(registre#<issue>):${NC}"
     printf '%s\n' "$BAD_MARKERS" | head -10
-    gate_fail "$BAD_MARKER_COUNT malformed LIMITATION marker(s) (file the issue in dravr-ai/dravr-registre)"
+    gate_fail "$BAD_MARKER_COUNT malformed LIMITATION marker(s) (file the issue in dravr-ai/llm-registre)"
 else
     gate_pass "All LIMITATION markers reference a registre issue"
 fi
