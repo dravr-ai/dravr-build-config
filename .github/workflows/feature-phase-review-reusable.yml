@@ -1,0 +1,88 @@
+# ABOUTME: Reusable weekly review of a caller repo's feature-phases.yaml dark-launch
+# ABOUTME: ledger — opens a private dravr-registre issue per overdue review_by date
+#
+# Issues are filed in the PRIVATE dravr-ai/dravr-registre tracker — most
+# dravr-* repos are public, so review issues (which describe disarmed security
+# features) must never land on the code repo itself. The registre token must
+# have issues read/write on dravr-registre; the probe step fails loudly if not.
+#
+# Caller example (each repo ships feature-phases.yaml at its root):
+#   jobs:
+#     review:
+#       uses: dravr-ai/dravr-build-config/.github/workflows/feature-phase-review-reusable.yml@main
+#       with:
+#         repo_label: dravr-myrepo
+#         title_prefix: myrepo
+#       secrets:
+#         registre_token: ${{ secrets.DRAVR_PRIVATE_DEPS_TOKEN }}
+name: "Reusable: Feature Phase Review"
+
+on:
+  workflow_call:
+    inputs:
+      repo_label:
+        description: "Registre label naming the calling repo (e.g. dravr-platform)"
+        required: true
+        type: string
+      title_prefix:
+        description: "Short prefix for issue titles (e.g. platform)"
+        required: true
+        type: string
+    secrets:
+      registre_token:
+        description: "Token with issues read/write on dravr-ai/dravr-registre"
+        required: true
+
+env:
+  REGISTRE: dravr-ai/dravr-registre
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe registre access
+        env:
+          GH_TOKEN: ${{ secrets.registre_token }}
+        run: |
+          set -euo pipefail
+          if ! gh issue list -R "$REGISTRE" --limit 1 >/dev/null 2>&1; then
+            echo "::error::registre_token cannot read $REGISTRE — grant the token access to dravr-registre (issues read/write)."
+            exit 1
+          fi
+
+      - name: Open registre issues for overdue phase reviews
+        env:
+          GH_TOKEN: ${{ secrets.registre_token }}
+          REPO_LABEL: ${{ inputs.repo_label }}
+          TITLE_PREFIX: ${{ inputs.title_prefix }}
+        run: |
+          set -euo pipefail
+          if [ ! -f feature-phases.yaml ]; then
+            echo "No feature-phases.yaml in caller repo — nothing ledgered."
+            exit 0
+          fi
+          today="$(date -u +%F)"
+          # Fixed-shape parse (see the feature-phases.yaml header): emit
+          # "name<TAB>review_by" per entry. ISO dates compare lexically.
+          awk '
+            /^  - name: /      { name=$0; sub(/^  - name: /, "", name) }
+            /^    review_by: / { d=$0; sub(/^    review_by: /, "", d); print name "\t" d }
+          ' feature-phases.yaml | while IFS=$'\t' read -r name review_by; do
+            if [[ ! "$review_by" > "$today" ]]; then
+              title="[$TITLE_PREFIX] Phase review due: $name"
+              open_count="$(gh issue list -R "$REGISTRE" --state open --search "in:title \"$title\"" --json number --jq 'length')"
+              if [ "$open_count" -eq 0 ]; then
+                gh issue create -R "$REGISTRE" \
+                  --title "$title" \
+                  --label feature-phase --label "$REPO_LABEL" \
+                  --body "$(printf 'The dark-launch ledger entry **%s** in %s passed its review date (%s).\n\nDecide: advance the phase (arm the feature), or re-date the review — either way, edit feature-phases.yaml in %s in the same change. Entry details (surface, current state, arming criterion) are in that file.\n\nOpened automatically by the "Feature Phase Review" workflow.' "$name" "$REPO_LABEL" "$review_by" "$REPO_LABEL")"
+                echo "Opened: $title"
+              else
+                echo "Already open: $title"
+              fi
+            else
+              echo "Not due: $name (review_by $review_by)"
+            fi
+          done

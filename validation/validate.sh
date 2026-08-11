@@ -370,6 +370,22 @@ if [ -n "$ROUTE_PATHS" ]; then
 fi
 
 # ============================================================================
+# Limitation register gates (shared across all dravr-* repos)
+# ============================================================================
+# Deferral prose ban + LIMITATION(registre#n) marker format + dark-launch
+# ledger format. See limitation-gates.sh for the full policy.
+LIMITATION_SCAN_DIRS=""
+[ -d "$PROJECT_ROOT/crates" ] && LIMITATION_SCAN_DIRS="$LIMITATION_SCAN_DIRS $PROJECT_ROOT/crates"
+[ -d "$PROJECT_ROOT/src" ] && LIMITATION_SCAN_DIRS="$LIMITATION_SCAN_DIRS $PROJECT_ROOT/src"
+if [ -n "$LIMITATION_SCAN_DIRS" ]; then
+    # Word-splitting of the dir list is intentional.
+    # shellcheck disable=SC2086
+    if ! "$SCRIPT_DIR/limitation-gates.sh" $LIMITATION_SCAN_DIRS; then
+        VALIDATION_FAILED=true
+    fi
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""
