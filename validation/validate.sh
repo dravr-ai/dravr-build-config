@@ -370,17 +370,23 @@ if [ -n "$ROUTE_PATHS" ]; then
 fi
 
 # ============================================================================
-# Limitation register gates (shared across all dravr-* repos)
+# Limitation register gates (llm-registre, vendored as a submodule)
 # ============================================================================
-# Deferral prose ban + LIMITATION(registre#n) marker format + dark-launch
-# ledger format. See limitation-gates.sh for the full policy.
+# Deferral prose ban + LIMITATION(marker#n) format + dark-launch ledger format.
+# The tool is Apache-2.0 and lives at github.com/dravr-ai/llm-registre; each
+# repo points it at a tracker via its own registre.toml. Consumers check out
+# submodules recursively, so a missing vendor/ dir means an incomplete clone —
+# warn rather than fail, exactly like the other optional tiers here.
+LIMITATION_GATES="$SCRIPT_DIR/../vendor/llm-registre/limitation-gates.sh"
 LIMITATION_SCAN_DIRS=""
 [ -d "$PROJECT_ROOT/crates" ] && LIMITATION_SCAN_DIRS="$LIMITATION_SCAN_DIRS $PROJECT_ROOT/crates"
 [ -d "$PROJECT_ROOT/src" ] && LIMITATION_SCAN_DIRS="$LIMITATION_SCAN_DIRS $PROJECT_ROOT/src"
-if [ -n "$LIMITATION_SCAN_DIRS" ]; then
+if [ ! -x "$LIMITATION_GATES" ]; then
+    warn_validation "llm-registre not checked out — run: git submodule update --init --recursive"
+elif [ -n "$LIMITATION_SCAN_DIRS" ]; then
     # Word-splitting of the dir list is intentional.
     # shellcheck disable=SC2086
-    if ! "$SCRIPT_DIR/limitation-gates.sh" $LIMITATION_SCAN_DIRS; then
+    if ! (cd "$PROJECT_ROOT" && "$LIMITATION_GATES" $LIMITATION_SCAN_DIRS); then
         VALIDATION_FAILED=true
     fi
 fi

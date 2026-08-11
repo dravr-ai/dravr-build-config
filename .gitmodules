@@ -1,0 +1,3 @@
+[submodule "vendor/llm-registre"]
+	path = vendor/llm-registre
+	url = https://github.com/dravr-ai/llm-registre
