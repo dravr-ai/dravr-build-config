@@ -130,8 +130,15 @@ fi
 # TODOs/FIXMEs
 # ============================================================================
 echo -e "${BLUE}Checking for incomplete code markers...${NC}"
-TODOS=$(rg "TODO|FIXME|XXX" $SRC_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
-TODOS_TESTS=$(rg "TODO|FIXME|XXX" $TEST_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+# `< /dev/null` is load-bearing: with an empty path variable rg falls back to
+# reading stdin and blocks forever. A repo with no tests/ directory hung this
+# script indefinitely (CI only survived it because its stdin is already closed).
+TODOS=$(rg "TODO|FIXME|XXX" $SRC_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null < /dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+if [ -n "$TEST_PATHS" ]; then
+    TODOS_TESTS=$(rg "TODO|FIXME|XXX" $TEST_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null < /dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+else
+    TODOS_TESTS=0
+fi
 TODOS_TOTAL=$((TODOS + TODOS_TESTS))
 if [ "$TODOS_TOTAL" -gt 0 ]; then
     fail_validation "Found $TODOS_TOTAL TODO/FIXME/XXX markers (src:$TODOS tests:$TODOS_TESTS)"
