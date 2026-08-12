@@ -27,6 +27,7 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
 - `hooks/` — Git hooks (pre-commit, commit-msg)
 - `ci/` — Reusable CI helpers
 - `docs/AGENTS_DISCIPLINE.md` — Shared architectural discipline rules for AI agents
+- `skills/` — Claude Code skills shared across repos; symlink them into your `.claude/skills/`
 - `vendor/llm-registre/` — submodule: the [llm-registre](https://github.com/dravr-ai/llm-registre)
   limitation-register gates, run by `validate.sh`
 
