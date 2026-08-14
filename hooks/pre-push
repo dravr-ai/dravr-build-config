@@ -12,6 +12,38 @@ MARKER_FILE="$GIT_DIR/validation-passed"
 VALIDATION_TTL_MINUTES=15
 VALIDATE_SCRIPT="$PROJECT_ROOT/scripts/ci/pre-push-validate.sh"
 
+# What this push actually carries, relative to what the remote already has.
+# Read twice below: by the inert-push exit here, and by the workspace branch
+# further down that scopes clippy to the crates whose files changed.
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if git rev-parse --verify "origin/$CURRENT_BRANCH" &>/dev/null; then
+    BASE_REF="origin/$CURRENT_BRANCH"
+elif git rev-parse --verify "origin/main" &>/dev/null; then
+    BASE_REF="origin/main"
+else
+    BASE_REF="HEAD~1"
+fi
+CHANGED_FILES=$(git diff --name-only "$BASE_REF" HEAD 2>/dev/null || echo "")
+
+# Paths no validation tier reads: prose, and the agent/editor config that steers
+# Claude Code rather than the build. This is an allowlist on purpose — a denylist
+# of "things that matter" silently stops covering whatever gets added next.
+# The .build gitlink is here because bumping the shared build config changes the
+# rules a future push is measured against, never the code in this one.
+INERT_RE='\.md$|^\.claude/|^\.build$|^\.gitignore$|^LICENSE'
+
+# An empty list means the diff could not be computed, not that nothing changed —
+# fall through to the full gate rather than skipping it on a failure to look.
+if [ -n "$CHANGED_FILES" ] &&
+   [ -z "$(printf '%s\n' "$CHANGED_FILES" | grep -vE "$INERT_RE" || true)" ]; then
+    echo "Pre-push: docs and agent config only — skipping local validation (CI still runs in full)"
+    echo ""
+    echo "REMINDER: Monitor CI after pushing. The Agent does NOT consider work"
+    echo "complete until CI on the pushed commit is green. See AGENTS.md →"
+    echo "'After Pushing — MANDATORY CI MONITORING'."
+    exit 0
+fi
+
 # If the project has pre-push-validate.sh, enforce the marker system.
 # Otherwise, run an inline clippy gate scoped to changed crates.
 if [ -f "$VALIDATE_SCRIPT" ]; then
@@ -73,25 +105,12 @@ if grep -q "^\[workspace\]" "$PROJECT_ROOT/Cargo.toml" 2>/dev/null && [ -d "$PRO
     IS_WORKSPACE=true
 fi
 
-# What this push actually carries, relative to what the remote already has.
-# Two things read it: the no-Rust early exit just below, and the workspace
-# branch further down that scopes clippy to the crates whose files changed.
-CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if git rev-parse --verify "origin/$CURRENT_BRANCH" &>/dev/null; then
-    BASE_REF="origin/$CURRENT_BRANCH"
-elif git rev-parse --verify "origin/main" &>/dev/null; then
-    BASE_REF="origin/main"
-else
-    BASE_REF="HEAD~1"
-fi
-CHANGED_FILES=$(git diff --name-only "$BASE_REF" HEAD 2>/dev/null || echo "")
-
-# Anything that can change what clippy reports. Config and docs cannot, so a
-# push carrying none of these has nothing for clippy to find.
+# Anything that can change what clippy or rustfmt report. A push that reaches
+# here carries something non-inert — frontend or scripts, say — but if none of
+# it is Rust, the Rust gate below has nothing to find. CHANGED_FILES and
+# BASE_REF are computed once at the top of this hook.
 RUST_CHANGE_RE='\.rs$|(^|/)Cargo\.(toml|lock)$|(^|/)(clippy|rustfmt|rust-toolchain)\.toml$|(^|/)rust-toolchain$'
 
-# An empty list means the diff could not be computed, not that nothing changed —
-# fall through to the full gate rather than skipping it on a failure to look.
 if [ -n "$CHANGED_FILES" ] && ! printf '%s\n' "$CHANGED_FILES" | grep -qE "$RUST_CHANGE_RE"; then
     echo "Pre-push: no Rust in this push — skipping fmt and clippy (CI runs both)"
     echo ""
