@@ -17,9 +17,9 @@ else
     git submodule add https://github.com/dravr-ai/dravr-build-config .build
 fi
 
-# Set up git hooks
-git config core.hooksPath .build/hooks
-echo "✅ Git hooks configured → .build/hooks"
+# Hooks path, submodule auto-sync config, and shared skills all live in the
+# bootstrap so there is one implementation of them, not two that drift.
+bash "$BUILD_DIR/ci/bootstrap-repo.sh"
 
 # Symlink configs
 for cfg in clippy.toml rustfmt.toml; do
