@@ -130,8 +130,27 @@ if [ "$IS_WORKSPACE" = true ]; then
     # Workspace: scope clippy to crates whose files changed (fast local gate).
     # CI runs full workspace clippy — this is intentionally narrower.
 
-    # Collect unique changed crate directories (bash 3.2 compatible — no associative arrays)
-    CHANGED_CRATES=""
+    # Read `name` from the [package] section only. A root Cargo.toml also carries
+    # [workspace] with a members list, and a bare `grep name` picks those up instead.
+    pkg_name_of() {
+        awk '/^\[package\]/{f=1;next} /^\[/{f=0} f' "$1" 2>/dev/null \
+            | grep -m1 '^name[[:space:]]*=' \
+            | sed -E 's/name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/'
+    }
+
+    # Collect changed package NAMES (bash 3.2 compatible — no associative arrays).
+    # Names rather than directories, because a package need not be named after its
+    # folder — dravr-embacle ships a package called `embacle` — and `cargo -p` wants
+    # the name.
+    CHANGED_PKGS=""
+    add_pkg() {
+        [ -z "$1" ] && return 0
+        case " $CHANGED_PKGS " in
+            *" $1 "*) ;;
+            *) CHANGED_PKGS="$CHANGED_PKGS $1" ;;
+        esac
+    }
+
     while IFS= read -r file; do
         [ -z "$file" ] && continue
         case "$file" in
@@ -139,24 +158,27 @@ if [ "$IS_WORKSPACE" = true ]; then
                 crate_dir="${file#crates/}"
                 crate_dir="${crate_dir%%/*}"
                 if [ -n "$crate_dir" ] && [ -d "$PROJECT_ROOT/crates/$crate_dir" ]; then
-                    case " $CHANGED_CRATES " in
-                        *" $crate_dir "*) ;;
-                        *) CHANGED_CRATES="$CHANGED_CRATES $crate_dir" ;;
-                    esac
+                    p=$(pkg_name_of "$PROJECT_ROOT/crates/$crate_dir/Cargo.toml")
+                    [ -z "$p" ] && p="$crate_dir"
+                    add_pkg "$p"
                 fi
+                ;;
+            src/*|build.rs)
+                # The workspace root is often a package in its own right, with sources
+                # in src/ rather than crates/. Nine dravr repos are shaped this way, so
+                # scanning only crates/ reported "no crate changes detected" and skipped
+                # clippy entirely for real code changes — a gate that reads as passing.
+                add_pkg "$(pkg_name_of "$PROJECT_ROOT/Cargo.toml")"
                 ;;
         esac
     done <<< "$CHANGED_FILES"
 
-    CHANGED_CRATES="${CHANGED_CRATES# }"
+    CHANGED_PKGS="${CHANGED_PKGS# }"
 
-    if [ -z "$CHANGED_CRATES" ]; then
-        echo "Pre-push: no crate changes detected, skipping clippy (CI will run full workspace clippy)"
+    if [ -z "$CHANGED_PKGS" ]; then
+        echo "Pre-push: no package changes detected, skipping clippy (CI will run full workspace clippy)"
     else
-        for crate_dir in $CHANGED_CRATES; do
-            crate_toml="$PROJECT_ROOT/crates/$crate_dir/Cargo.toml"
-            pkg=$(grep -m1 '^name[[:space:]]*=' "$crate_toml" 2>/dev/null | sed -E 's/name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
-            [ -z "$pkg" ] && pkg="$crate_dir"
+        for pkg in $CHANGED_PKGS; do
             echo "Pre-push: clippy -p $pkg --all-targets --all-features"
             if ! cargo clippy -p "$pkg" --all-targets --all-features -- -D warnings; then
                 echo ""
