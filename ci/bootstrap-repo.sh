@@ -147,7 +147,12 @@ fi
 # only ever creates a name that is absent — a real directory of the same name is
 # a repo-local skill and always wins.
 SKILL_DIR="$REPO_ROOT/.claude/skills"
-if [ -d "$REPO_ROOT/.build/skills" ] && [ -d "$SKILL_DIR" ]; then
+if [ -n "$(ls -A "$REPO_ROOT/.build/skills" 2>/dev/null)" ]; then
+    # A repo consuming .build is a Claude Code repo, so when it has no skills
+    # directory yet the shared skills are precisely what should create it.
+    # Requiring the directory to pre-exist would silently withhold every shared
+    # skill from exactly the repos that have none of their own.
+    mkdir -p "$SKILL_DIR"
     for shared in "$REPO_ROOT"/.build/skills/*/; do
         [ -d "$shared" ] || continue
         name=$(basename "$shared")
