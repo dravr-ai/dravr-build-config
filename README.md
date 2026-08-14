@@ -57,17 +57,26 @@ missing hooks. It **never** moves a `.build` that is dirty or on a branch — it
 instead — and it always exits 0, because a session-start hook that fails tells you
 nothing useful.
 
-Wire it into `.claude/settings.json` as a `SessionStart` hook. The `[ -f ]` guard is
-load-bearing: a `.build` pinned *before* this script existed cannot run it, so the
-fallback checks out the pinned revision first (skipped when `.build` is on a branch,
-so in-progress work is never detached):
+Wire it into `.claude/settings.json` as a `SessionStart` hook. Every guard in that
+one-liner is load-bearing, because a script that lives inside the submodule cannot
+be the thing that checks the submodule out:
+
+- `[ -f .build/ci/bootstrap-repo.sh ]` — a `.build` pinned *before* this script
+  existed cannot run it, so the fallback must check out the pinned revision first.
+- `[ -e .build/.git ]` — **required before the `symbolic-ref` test.** On an
+  uninitialized submodule `.build/` is an empty directory, so `git -C .build`
+  silently walks up and answers about the *parent* repo, which always has a branch.
+  Without this test the branch guard misfires exactly when `.build` is missing
+  entirely — a fresh clone or a new worktree, the cases that most need repairing.
+- `symbolic-ref` — skips the checkout when `.build` really is on a branch, so
+  in-progress work there is never detached.
 
 ```json
 {
   "hooks": {
     "SessionStart": [
       { "matcher": "", "hooks": [ { "type": "command",
-        "command": "[ -f .build/ci/bootstrap-repo.sh ] || git -C .build symbolic-ref -q HEAD >/dev/null 2>&1 || git submodule update --init --recursive -q 2>/dev/null; [ -f .build/ci/bootstrap-repo.sh ] && bash .build/ci/bootstrap-repo.sh || true"
+        "command": "[ -f .build/ci/bootstrap-repo.sh ] || { [ -e .build/.git ] && git -C .build symbolic-ref -q HEAD >/dev/null 2>&1; } || git submodule update --init --recursive -q 2>/dev/null; [ -f .build/ci/bootstrap-repo.sh ] && bash .build/ci/bootstrap-repo.sh || true"
       } ] }
     ]
   }
