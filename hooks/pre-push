@@ -111,6 +111,40 @@ fi
 # BASE_REF are computed once at the top of this hook.
 RUST_CHANGE_RE='\.rs$|(^|/)Cargo\.(toml|lock)$|(^|/)(clippy|rustfmt|rust-toolchain)\.toml$|(^|/)rust-toolchain$'
 
+# ---- Shared architectural validation (compile-free, ~0.5s) ----
+# validate.sh's rules are pure text scans — the .expect()/unwrap bans, placeholder
+# and stub-signature detection, ignored tests, CI continue-on-error, the register
+# gates. Skipping them locally buys nothing and costs a full red CI round-trip when
+# one lands, which is exactly how an .expect() violation reached CI from
+# dravr-sciotte. Repos owning a scripts/ci/pre-push-validate.sh never reach this
+# line — the marker branch above exits on every path — and they run this same tier
+# themselves, so nothing double-runs.
+#
+# This sits BEFORE the Rust-only exit below on purpose: validate.sh reads more than
+# Rust (.github/workflows/, JS/TS test files, the register config), so a
+# workflow-only push still needs it. The regex over-matches by design; a needless
+# half-second beats a missed violation.
+ARCH_VALIDATE="$PROJECT_ROOT/.build/validation/validate.sh"
+VALIDATION_CHANGE_RE="$RUST_CHANGE_RE"'|^\.github/workflows/|(^|/)(validation-patterns\.local|ignored-tests-allowlist|registre)\.toml$|(^|/)feature-phases\.ya?ml$|\.(test|spec)\.[jt]sx?$'
+
+if [ ! -f "$ARCH_VALIDATE" ]; then
+    echo "Pre-push: .build/validation/validate.sh missing — run: git submodule update --init --recursive"
+elif [ -z "$CHANGED_FILES" ] || printf '%s\n' "$CHANGED_FILES" | grep -qE "$VALIDATION_CHANGE_RE"; then
+    # An empty CHANGED_FILES means the diff could not be computed, not that nothing
+    # changed, so run the gate rather than skip it — same stance as the checks above.
+    echo "Pre-push: architectural validation..."
+    # stdin is redirected because pre-push receives the ref list on it, and
+    # validate.sh documents that an rg with an empty path argument will otherwise
+    # read stdin and block. Output is held and replayed only on failure, matching
+    # the terse style of the fmt gate below.
+    if ! ARCH_OUTPUT=$(bash "$ARCH_VALIDATE" < /dev/null 2>&1); then
+        printf '%s\n' "$ARCH_OUTPUT"
+        echo ""
+        echo "BLOCKED: Architectural validation failed. Fix the issues above before pushing."
+        exit 1
+    fi
+fi
+
 if [ -n "$CHANGED_FILES" ] && ! printf '%s\n' "$CHANGED_FILES" | grep -qE "$RUST_CHANGE_RE"; then
     echo "Pre-push: no Rust in this push — skipping fmt and clippy (CI runs both)"
     echo ""

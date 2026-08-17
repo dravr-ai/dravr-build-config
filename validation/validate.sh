@@ -19,6 +19,18 @@ LOCAL_PATTERNS_FILE="$PROJECT_ROOT/validation-patterns.local.toml"
 
 VALIDATION_FAILED=false
 
+# Every scan below is ripgrep-based, and each one redirects rg's own errors to
+# /dev/null so a missing binary reads as "no matches" — i.e. as a clean repo.
+# Verified: with rg off PATH this script reports "No continue-on-error in CI"
+# on a repo that has one. A validator that passes when it cannot run is worse
+# than no validator, and this one now gates every push.
+if ! command -v rg > /dev/null 2>&1; then
+    echo -e "${RED}❌ ripgrep (rg) not found — every check here depends on it${NC}"
+    echo "   Install it (brew install ripgrep / apt-get install -y ripgrep) and re-run."
+    echo "   Refusing to report success from checks that cannot run."
+    exit 1
+fi
+
 fail_validation() {
     echo -e "${RED}❌ $1${NC}"
     VALIDATION_FAILED=true
@@ -325,7 +337,11 @@ if [ -d "$PROJECT_ROOT/.github/workflows" ]; then
     for excl in $COE_EXCLUDES; do
         COE_RESULT=$(echo "$COE_RESULT" | grep -v "$excl" || true)
     done
-    COE=$(echo "$COE_RESULT" | grep -c "continue-on-error" || echo 0)
+    # `grep -c` prints 0 and exits 1 when nothing matches, so `|| echo 0` used to
+    # append a second 0 and the test saw "0\n0" -> "integer expression expected".
+    # It fell through to the pass branch, so it failed safe, but it printed an
+    # error on every clean run in every repo.
+    COE=$(printf '%s\n' "$COE_RESULT" | grep -c "continue-on-error" || true)
     if [ "$COE" -gt 0 ]; then
         fail_validation "Found $COE continue-on-error: true in CI workflows"
     else
