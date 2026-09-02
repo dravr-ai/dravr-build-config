@@ -39,9 +39,12 @@ if [ -n "$STAGED_TS" ]; then
         # which is always 0, and the success line below used to print with no
         # test at all — so a real lint failure, and a missing eslint exiting
         # 127, both reported a green check. Run in a subshell so a failed cd
-        # cannot leave the hook above the repo root.
-        lint_output=$(cd frontend && bun run lint 2>&1)
-        lint_status=$?
+        # cannot leave the hook above the repo root. The `|| lint_status=$?`
+        # form matters under `set -e`: a plain assignment from a failing
+        # command substitution aborts the hook right here, with no message
+        # and no commit, before the toolchain-missing branch below can run.
+        lint_status=0
+        lint_output=$(cd frontend && bun run lint 2>&1) || lint_status=$?
         if [ "$lint_status" -eq 127 ] || printf '%s' "$lint_output" | grep -q 'command not found'; then
             # The toolchain is absent (a fresh worktree with no bun install).
             # Say so plainly instead of claiming a pass; CI runs the real lint.
