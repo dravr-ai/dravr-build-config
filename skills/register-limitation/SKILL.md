@@ -54,7 +54,7 @@ worktree's basename is its branch, not a project), prefixes the title `[<project
 the project label. Pass `--label limitation` because a marker will point at this issue.
 
 ```bash
-.build/skills/carnet/carnet.sh create \
+.claude/skills/carnet/carnet.sh create \
   --label limitation \
   --title "Short statement of the gap" \
   --body "Where it is (file + symbol). What is incomplete. What the correct fix looks like."

@@ -1,5 +1,5 @@
-# ABOUTME: Tests the shared shell tooling on every push — syntax, shellcheck, carnet, and the hook guards
-# ABOUTME: The carnet tests run against a stub gh, so this job needs no token and touches no tracker
+# ABOUTME: Tests the shared shell tooling on every push — syntax, shellcheck, and the hook guards
+# ABOUTME: Everything here is offline: no token, no network, no repo state touched
 name: test
 
 on:
@@ -20,9 +20,7 @@ jobs:
           set -euo pipefail
           find . -path ./vendor -prune -o -name '*.sh' -print0 | xargs -0 -n1 bash -n
           for f in hooks/pre-commit hooks/commit-msg hooks/pre-push; do bash -n "$f"; done
-      - name: shellcheck the carnet skill and the hooks
-        run: shellcheck -S warning skills/carnet/carnet.sh skills/carnet/hooks/*.sh hooks/pre-commit
-      - name: carnet suite against a stub gh
-        run: bash skills/carnet/test.sh
+      - name: shellcheck the hooks
+        run: shellcheck -S warning hooks/pre-commit
       - name: pre-commit submodule guard
         run: bash hooks/test-pre-commit.sh

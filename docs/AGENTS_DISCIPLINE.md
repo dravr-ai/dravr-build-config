@@ -88,7 +88,7 @@ Default behavior is to complete the requested task. These triggers override that
 ## Working an Issue in the Register
 
 Two humans run many Claude Code sessions at once against one private register, so an issue
-must say who holds it and which session. The `carnet` skill (`.build/skills/carnet/carnet.sh`)
+must say who holds it and which session. The `carnet` skill (`.claude/skills/carnet/carnet.sh`)
 is the only path into the tracker — never `gh issue` by hand.
 
 1. **Claim before the first edit — the hooks do it without you.** Any issue a prompt named is
