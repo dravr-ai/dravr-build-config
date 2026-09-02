@@ -83,6 +83,31 @@ be the thing that checks the submodule out:
 }
 ```
 
+### The rewind guard
+
+`bootstrap-repo.sh` keeps a *pull* from leaving `.build` behind. It cannot help with the
+other direction: a **squash merge from a branch forked before a `.build` bump** carries
+that branch's older gitlink and records it over the newer one. Nothing fails — `.build/`
+just becomes the old revision, and everything resolving through it degrades in the silence
+described above. On 2026-09-02 that removed the `carnet` skill from eight of nine live
+Claude Code sessions for three hours; the only symptom was a `DEAD symlink` line in the
+session-start banner.
+
+So `hooks/pre-commit` refuses a commit that moves a submodule pointer to an **ancestor** of
+the current one:
+
+```
+❌ .build would move BACKWARDS 1 commit(s):
+     dbbb7eae  →  19315089
+   Keep the newer pointer:
+     git restore --staged .build && git submodule update --init --recursive .build
+```
+
+A deliberate rollback stays possible — stage the submodule by itself and the guard warns
+instead of refusing. When the submodule is not checked out the direction cannot be
+determined, and the hook says so rather than passing quietly. `hooks/test-pre-commit.sh`
+makes every one of those paths fire.
+
 ## Shared skills
 
 `skills/` ships Claude Code skills every consumer exposes through a symlink in its

@@ -18,6 +18,60 @@ if [ -n "$STAGED_TF" ]; then
     exit 1
 fi
 
+# Refuse a submodule pointer that moves BACKWARDS.
+#
+# A squash merge from a branch forked before a submodule bump carries that
+# branch's older gitlink, and the merge records it over the newer one. Nothing
+# fails loudly: the submodule silently becomes the old revision, core.hooksPath
+# finds fewer hooks, validate.sh loses its register gates, and every
+# .claude/skills symlink into .build/skills dangles — a dangling skill symlink
+# is not an error, the skill simply stops existing. That is how the carnet
+# skill vanished from eight of nine live sessions on 2026-09-02
+# (dravr-platform 6105b810b rewound it, 5468acc4b put it back).
+#
+# A deliberate rollback stays possible: stage the submodule by itself.
+STAGED_LINKS=$(git diff --cached --raw | grep '^:160000 160000' || true)
+if [ -n "$STAGED_LINKS" ]; then
+    STAGED_COUNT=$(git diff --cached --name-only | wc -l | tr -d ' ')
+    while IFS= read -r link; do
+        [ -n "$link" ] || continue
+        SM_OLD=$(printf '%s' "$link" | awk '{print $3}')
+        SM_NEW=$(printf '%s' "$link" | awk '{print $4}')
+        SM_PATH=$(printf '%s' "$link" | cut -f2-)
+
+        # An uninitialized submodule cannot be interrogated. Say so rather than
+        # passing silently — silence is the failure this guard exists to end.
+        if [ ! -e "$SM_PATH/.git" ]; then
+            echo "⚠️  $SM_PATH pointer changed but the submodule is not checked out — direction unverified."
+            echo "   Run: git submodule update --init --recursive $SM_PATH"
+            continue
+        fi
+        if ! git -C "$SM_PATH" cat-file -e "$SM_OLD^{commit}" 2>/dev/null ||
+           ! git -C "$SM_PATH" cat-file -e "$SM_NEW^{commit}" 2>/dev/null; then
+            echo "⚠️  $SM_PATH: one of $(printf %.8s "$SM_OLD")/$(printf %.8s "$SM_NEW") is not in the submodule's objects — direction unverified."
+            echo "   Run: git -C $SM_PATH fetch --all"
+            continue
+        fi
+
+        # A rewind is exactly: the new pointer is an ancestor of the old one.
+        if git -C "$SM_PATH" merge-base --is-ancestor "$SM_NEW" "$SM_OLD" 2>/dev/null; then
+            SM_LOST=$(git -C "$SM_PATH" rev-list --count "$SM_NEW..$SM_OLD" 2>/dev/null || echo "?")
+            if [ "$STAGED_COUNT" -eq 1 ]; then
+                echo "⚠️  Rolling $SM_PATH back $SM_LOST commit(s) to $(printf %.8s "$SM_NEW") — submodule staged alone, allowed."
+            else
+                echo "❌ $SM_PATH would move BACKWARDS $SM_LOST commit(s):"
+                echo "     $(printf %.8s "$SM_OLD")  →  $(printf %.8s "$SM_NEW")"
+                echo "   Almost always a squash merge from a branch forked before a $SM_PATH bump."
+                echo "   Everything resolving through $SM_PATH degrades in silence: hooks, validation, skill symlinks."
+                echo "   Keep the newer pointer:"
+                echo "     git restore --staged $SM_PATH && git submodule update --init --recursive $SM_PATH"
+                echo "   To roll back on purpose, commit $SM_PATH on its own."
+                exit 1
+            fi
+        fi
+    done <<< "$STAGED_LINKS"
+fi
+
 # Check SPDX headers on staged Rust files
 STAGED_RS=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
 if [ -n "$STAGED_RS" ]; then
