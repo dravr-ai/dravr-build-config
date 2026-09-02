@@ -1,0 +1,26 @@
+# ABOUTME: Tests the shared shell tooling on every push — syntax, shellcheck, and the carnet suite
+# ABOUTME: The carnet tests run against a stub gh, so this job needs no token and touches no tracker
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax of every shell script
+        run: |
+          set -euo pipefail
+          find . -path ./vendor -prune -o -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          for f in hooks/pre-commit hooks/commit-msg hooks/pre-push; do bash -n "$f"; done
+      - name: shellcheck the carnet skill
+        run: shellcheck -S warning skills/carnet/carnet.sh skills/carnet/hooks/*.sh
+      - name: carnet suite against a stub gh
+        run: bash skills/carnet/test.sh

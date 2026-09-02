@@ -84,3 +84,23 @@ STOP and ask the user before proceeding when you find:
    → "Finish migration first, or add feature on top?"
 
 Default behavior is to complete the requested task. These triggers override that.
+
+## Working an Issue in the Register
+
+Two humans run many Claude Code sessions at once against one private register, so an issue
+must say who holds it and which session. The `carnet` skill (`.build/skills/carnet/carnet.sh`)
+is the only path into the tracker — never `gh issue` by hand.
+
+1. **Claim before the first edit** — `carnet.sh claim <n>` the moment you decide to work an
+   issue. It assigns you, adds `in-progress`, and posts a marker naming this session.
+2. **Exit code 2 is a peer.** Another live session holds it, or a session on another host
+   does. Name them to the user and stop. `--steal` is the user's decision, never yours.
+3. **Release or close when you stop.** `release <n>` on hand-off or abandonment;
+   `close <n> --why "…" --commit <sha>` when it landed. `--why` is mandatory — a commit
+   message saying `carnet#n` is plain text to GitHub and closes nothing across repos.
+4. **File through `create`.** Title `[<project>] <Thing>`, project label, private tracker —
+   the script enforces all three. `limitation` only when a `LIMITATION(registre#n)` marker
+   will point at the issue.
+
+The prompt hook prints the claim status of every issue you mention; the session-end hook
+releases what a session forgot. Neither replaces rule 1.

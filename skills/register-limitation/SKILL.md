@@ -48,15 +48,22 @@ Issue bodies may hold reasoning and residual risk; the code comment stays thin.
 
 ## Step 1 — file the issue
 
-```bash
-TRACKER=$(sed -n 's/^tracker[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' registre.toml)
-REPO=$(basename "$(git rev-parse --show-toplevel)")
+File it through the `carnet` skill's script — the one path into the register. It reads the
+tracker from `registre.toml`, refuses a public tracker, derives the project from `origin` (a
+worktree's basename is its branch, not a project), prefixes the title `[<project>] `, and adds
+the project label. Pass `--label limitation` because a marker will point at this issue.
 
-gh issue create -R "$TRACKER" \
-  --title "[$REPO] Short statement of the gap" \
-  --label limitation --label "$REPO" \
+```bash
+.build/skills/carnet/carnet.sh create \
+  --label limitation \
+  --title "Short statement of the gap" \
   --body "Where it is (file + symbol). What is incomplete. What the correct fix looks like."
+# → https://github.com/<tracker>/issues/42
+#   marker: LIMITATION(registre#42): <name the limited item on this line>
 ```
+
+Add `--claim` when you are about to keep working the gap in this session, so a peer sees it
+held.
 
 ## Step 2 — write the marker
 
