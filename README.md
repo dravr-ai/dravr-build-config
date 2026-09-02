@@ -116,14 +116,16 @@ optionally with the script it wraps.
 
 | Skill | Purpose |
 |---|---|
-| `carnet` | the register from the command line: `claim`, `release`, `status`, `mine`, `create`, `close`, `label`. A claim = assignee + `in-progress` label + a marker comment naming the Claude Code session, so a peer session sees who holds an issue before starting the same work. Two hooks make it automatic — see below. |
+| `carnet` | the register from the command line: `claim`, `release`, `status`, `mine`, `create`, `close`, `label`. A claim = assignee + `in-progress` label + a marker comment naming the Claude Code session, so a peer session sees who holds an issue before starting the same work. Three hooks make it automatic — see below. |
 | `register-limitation` | file a limitation issue (through `carnet create`), write the `LIMITATION(registre#n)` marker, ledger a dark launch |
 
 ### carnet hooks
 
-Add to the consumer repo's `.claude/settings.json`. The prompt hook prints the live claim
-status of every issue a prompt names into the model's context; the session-end hook releases
-whatever the session still holds. Both exit 0 on every failure.
+Add to the consumer repo's `.claude/settings.json`. Together they make a claim happen without
+anyone remembering to: the prompt hook prints the live claim status of every issue a prompt
+names and records those numbers, the PreToolUse hook claims them on the session's first edit,
+and the session-end hook releases whatever is still held. Every failure path exits 0 and
+leaves the tool call alone.
 
 ```json
 {
@@ -132,6 +134,10 @@ whatever the session still holds. Both exit 0 on every failure.
       { "matcher": "", "hooks": [ { "type": "command", "timeout": 20,
         "command": "[ -f .build/skills/carnet/hooks/prompt-status.sh ] && bash .build/skills/carnet/hooks/prompt-status.sh || true" } ] }
     ],
+    "PreToolUse": [
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash", "hooks": [ { "type": "command", "timeout": 20,
+        "command": "[ -f .build/skills/carnet/hooks/auto-claim.sh ] && bash .build/skills/carnet/hooks/auto-claim.sh || true" } ] }
+    ],
     "SessionEnd": [
       { "hooks": [ { "type": "command", "timeout": 30,
         "command": "[ -f .build/skills/carnet/hooks/session-end-release.sh ] && bash .build/skills/carnet/hooks/session-end-release.sh || true" } ] }
@@ -139,6 +145,11 @@ whatever the session still holds. Both exit 0 on every failure.
   }
 }
 ```
+
+A rule the model has to remember is one it will sometimes forget, and forgetting is exactly
+the failure the claim exists to prevent — so the trigger is the edit, not the intention.
+Asking about an issue stays free: a question never reaches a write tool. When nothing is
+pending the PreToolUse hook costs a single `stat`.
 
 `skills/carnet/test.sh` runs the whole skill against a stub `gh`; `.github/workflows/test.yml`
 runs it on every push here.

@@ -91,10 +91,14 @@ Two humans run many Claude Code sessions at once against one private register, s
 must say who holds it and which session. The `carnet` skill (`.build/skills/carnet/carnet.sh`)
 is the only path into the tracker — never `gh issue` by hand.
 
-1. **Claim before the first edit** — `carnet.sh claim <n>` the moment you decide to work an
-   issue. It assigns you, adds `in-progress`, and posts a marker naming this session.
+1. **Claim before the first edit — the hooks do it without you.** Any issue a prompt named is
+   claimed on your first write-shaped tool call: assignee, `in-progress`, and a marker naming
+   this session. Run `carnet.sh claim <n>` yourself only when the number never appeared in a
+   prompt — you found it by searching, or you are picking work up mid-session.
 2. **Exit code 2 is a peer.** Another live session holds it, or a session on another host
-   does. Name them to the user and stop. `--steal` is the user's decision, never yours.
+   does. Name them to the user and stop. `--steal` is the user's decision, never yours. The
+   auto-claim hook blocks one tool call to tell you this, then stops — after that the
+   duplicate work is yours, not the hook's.
 3. **Release or close when you stop.** `release <n>` on hand-off or abandonment;
    `close <n> --why "…" --commit <sha>` when it landed. `--why` is mandatory — a commit
    message saying `carnet#n` is plain text to GitHub and closes nothing across repos.

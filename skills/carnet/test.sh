@@ -87,7 +87,7 @@ ok()  { pass=$((pass + 1)); printf '  ✓ %s\n' "$1"; }
 bad() { fail=$((fail + 1)); printf '  ✗ %s\n' "$1"; }
 assert_eq()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 — expected '$3', got '$2'"; fi; }
 assert_grep() { # <desc> <regex> <file>
-    if grep -qE -- "$2" "$3"; then ok "$1"; else bad "$1 — no /$2/ in $(basename "$3")"; sed 's/^      | /' "$3" | head -20; fi
+    if grep -qE -- "$2" "$3"; then ok "$1"; else bad "$1 — no /$2/ in $(basename "$3")"; sed 's/^/      | /' "$3" | head -20; fi
 }
 assert_no_grep() { if grep -qE -- "$2" "$3"; then bad "$1 — found /$2/ in $(basename "$3")"; else ok "$1"; fi; }
 count_calls() { grep -cE "^CALL $1" "$S/calls.log" || true; }
@@ -339,6 +339,83 @@ assert_grep "session-end hook: marker names the ended session" "^BODY <!-- carne
 : > "$S/calls.log"
 printf '{"session_id":"%s"}' "$DEAD" | bash "$here/hooks/session-end-release.sh"
 assert_eq "session-end hook: no ledger, no call" "$(wc -c < "$S/calls.log" | tr -d ' ')" 0
+
+# ================================================================== auto-claim
+section "auto-claim (PreToolUse)"
+
+auto_claim() { # <payload> ; sets rc, $tmp/ac.out, $tmp/ac.err
+    rc=0
+    printf '%s' "$1" | bash "$here/hooks/auto-claim.sh" > "$tmp/ac.out" 2> "$tmp/ac.err" || rc=$?
+}
+pending_dir="$tmp/cfg/carnet-claims/pending"
+set_pending() { mkdir -p "$pending_dir"; printf '%s\n' "$@" > "$pending_dir/$ME.txt"; }
+edit_payload() { printf '{"tool_name":"Edit","session_id":"%s","tool_input":{"file_path":"/x"}}' "$ME"; }
+bash_payload() { printf '{"tool_name":"Bash","session_id":"%s","tool_input":{"command":"%s"}}' "$ME" "$1"; }
+
+# Nothing pending is the common case and must cost nothing at all.
+reset; rm -rf "$pending_dir"
+auto_claim "$(edit_payload)"
+assert_eq "no pending list: allows the tool" "$rc" 0
+assert_eq "no pending list: makes no call" "$(wc -c < "$S/calls.log" | tr -d ' ')" 0
+
+# The prompt hook is what fills the list.
+reset; rm -rf "$pending_dir"
+printf '{"prompt":"work carnet#42 please","session_id":"%s"}' "$ME" | bash "$here/hooks/prompt-status.sh" >/dev/null
+assert_grep "prompt hook records the issue as pending" '^42$' "$pending_dir/$ME.txt"
+printf '{"prompt":"nothing about the register","session_id":"%s"}' "$ME" | bash "$here/hooks/prompt-status.sh" >/dev/null
+assert_grep "a prompt naming none leaves the list alone" '^42$' "$pending_dir/$ME.txt"
+
+# An edit claims it, without anyone asking.
+reset; set_pending 42
+auto_claim "$(edit_payload)"
+assert_eq "an edit claims the pending issue" "$rc" 0
+assert_grep "and says so" '^🔒 carnet auto-claimed: 42' "$tmp/ac.out"
+assert_grep "the claim reached the tracker" 'issue edit 42 -R dravr-ai/dravr-carnet --add-assignee tester --add-label in-progress' "$S/calls.log"
+assert_grep "the marker names this session" "^BODY <!-- carnet-claim \{.*\"session\":\"$ME\"" "$S/calls.log"
+
+# Consumed once: a second edit is free.
+: > "$S/calls.log"
+auto_claim "$(edit_payload)"
+assert_eq "the list is consumed, so a later edit makes no call" "$(wc -c < "$S/calls.log" | tr -d ' ')" 0
+
+# Reading is not working.
+reset; set_pending 42
+auto_claim "$(printf '{"tool_name":"Read","session_id":"%s"}' "$ME")"
+assert_eq "a read tool claims nothing" "$(wc -c < "$S/calls.log" | tr -d ' ')" 0
+auto_claim "$(bash_payload 'grep -rn TODO src/')"
+assert_eq "a read-shaped Bash claims nothing" "$(wc -c < "$S/calls.log" | tr -d ' ')" 0
+auto_claim "$(bash_payload 'git status --short')"
+assert_eq "git status claims nothing" "$(wc -c < "$S/calls.log" | tr -d ' ')" 0
+
+# A write-shaped Bash command is an edit — this session edits through bash.
+reset; set_pending 42
+auto_claim "$(bash_payload "sed -i '' s/a/b/ f.txt")"
+assert_grep "sed -i claims" 'issue edit 42 .*--add-label in-progress' "$S/calls.log"
+reset; set_pending 42
+auto_claim "$(bash_payload 'cat > note.txt <<EOT')"
+assert_grep "a redirect into a file claims" 'issue edit 42 .*--add-label in-progress' "$S/calls.log"
+reset; set_pending 42
+auto_claim "$(bash_payload 'git commit -m wip')"
+assert_grep "git commit claims" 'issue edit 42 .*--add-label in-progress' "$S/calls.log"
+
+# A live peer holding it blocks the edit once, and names them.
+reset; set_pending 42
+comments < <(claim_marker "$PEER" PeerSession peer "$HOST" "$peer_pid")
+auto_claim "$(edit_payload)"
+assert_eq "a live peer's claim blocks the edit" "$rc" 2
+assert_grep "the block names the holder" 'PeerSession' "$tmp/ac.err"
+assert_grep "the block says not to duplicate" 'Do not do this work twice' "$tmp/ac.err"
+assert_no_grep "and steals nothing" 'add-label in-progress' "$S/calls.log"
+set_pending 42
+auto_claim "$(edit_payload)"
+assert_eq "having said it once, it stops blocking" "$rc" 0
+
+# A list nobody acted on goes stale rather than claiming much later.
+reset; set_pending 42
+touch -t 202001010000 "$pending_dir/$ME.txt"
+auto_claim "$(edit_payload)"
+assert_eq "an hour-old list is dropped, not claimed" "$(wc -c < "$S/calls.log" | tr -d ' ')" 0
+[ -f "$pending_dir/$ME.txt" ] && bad "stale list removed" || ok "stale list removed"
 
 # ================================================================== summary
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

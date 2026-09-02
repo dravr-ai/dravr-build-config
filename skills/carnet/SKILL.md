@@ -25,12 +25,16 @@ title shape uniform.
 
 ## The rules
 
-1. **Claim before the first edit.** The moment you decide to work an issue — you read it, you
-   are about to change code for it — run `claim <n>`. Not after the commit. A claim made
-   after the work is done protects nobody.
+1. **Claim before the first edit — and it now happens without you.** The PreToolUse hook
+   claims every issue the prompt named as soon as you touch a write tool, so an issue you
+   were told about is held before your first edit lands. Run `claim <n>` yourself when the
+   number never appeared in a prompt (you found the issue by searching, or you are picking up
+   work mid-session). Not after the commit: a claim made after the work is done protects
+   nobody.
 2. **A refusal is a peer, not an obstacle.** Exit code 2 means another *live* session holds
    the issue, or a session on another host does. Tell the user who and which session, and
-   stop. Do not `--steal` on your own judgement — stealing is the user's call, and the
+   stop. The auto-claim hook enforces this once: it blocks your first edit and names the
+   holder. It does not block again — after that you are accountable, not the hook. Do not `--steal` on your own judgement — stealing is the user's call, and the
    stolen-from session is warned on the issue.
 3. **Release when you stop, close when it is fixed.** `release <n>` when you abandon or hand
    off; `close <n> --why "…" --commit <sha>` when the work landed. Both drop the label and
@@ -70,12 +74,24 @@ Add `--dry-run` to any of them to see the `gh` calls without making them.
   before you answer — `carnet#197 · held by @jfarcand · session i18Guards (a3f9c2d1) on 1Q84
   [running] · feature/i18n-guards · since …`. Read it. If it says `unclaimed`, claim before
   editing. If it says `[session ended — stale]`, a plain `claim` takes it over.
+- **PreToolUse** (`hooks/auto-claim.sh`): claims those issues for you, on the first
+  write-shaped tool call after the prompt that named them. Reading is not working — a
+  question about an issue never reaches a write tool and never claims. A `Bash` call counts
+  as an edit only when the command looks like one (a redirect into a file, `sed -i`, `mv`,
+  `git commit`, …), because a session that edits through bash would otherwise never claim.
+  If a live peer holds the issue it blocks that one tool call and names them.
 - **SessionEnd** (`hooks/session-end-release.sh`): releases everything this session still
   holds, from its ledger under `$CLAUDE_CONFIG_DIR/carnet-claims/`. Zero calls when nothing
   is held.
 
-Both are wired in the consumer repo's `.claude/settings.json`; the snippet is at the top of
-each hook file.
+All three are wired in the consumer repo's `.claude/settings.json`; the snippet is at the top
+of each hook file. The auto-claim hook costs one `stat` when nothing is pending, which is
+almost always — it runs before every edit in every session.
+
+**What it deliberately does not do.** It never claims from a prompt alone, so asking about an
+issue is free. It never steals. It forgets a pending list an hour old, so an issue mentioned
+long ago is not claimed by an unrelated edit. And it never blocks twice for the same issue: a
+permanent block would deadlock a session over an issue that was only mentioned in passing.
 
 ## How liveness is decided
 
