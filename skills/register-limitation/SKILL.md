@@ -83,6 +83,11 @@ Rules that make a marker valid rather than decorative:
   says only "this is incomplete" is unsearchable.
 - The marker exempts **its own line** from the prose ban, not the file. A second unmarked deferral
   sentence on the next line still fails.
+- **Put it in source the gates scan.** Test, bench, example and generated trees are outside the
+  scan (`limitation-gates.sh --list-files` prints what is in), so a marker there is validated by
+  nothing and never credits the issue as registered. A gap in test *coverage* belongs to the
+  production item that goes uncovered: mark that item, where the next person to change it reads
+  it — "LIMITATION(registre#42): the live eval lane never executes `assemble_prompt`, so …".
 
 ## Step 3 — if the feature ships disarmed, ledger it too
 

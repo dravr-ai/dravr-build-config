@@ -402,11 +402,19 @@ fi
 # warn rather than fail, exactly like the other optional tiers here.
 LIMITATION_GATES="$SCRIPT_DIR/../vendor/llm-registre/limitation-gates.sh"
 LIMITATION_SCAN_DIRS=""
-[ -d "$PROJECT_ROOT/crates" ] && LIMITATION_SCAN_DIRS="$LIMITATION_SCAN_DIRS $PROJECT_ROOT/crates"
-[ -d "$PROJECT_ROOT/src" ] && LIMITATION_SCAN_DIRS="$LIMITATION_SCAN_DIRS $PROJECT_ROOT/src"
+# A repo that declares scan_dirs in registre.toml owns its scope: the gate reads it when handed no
+# directories, and so does every other tool that asks it for --list-files. Only a repo that
+# declares nothing gets this default.
+REGISTRE_DECLARES_SCOPE=false
+grep -qE '^[[:space:]]*scan_dirs[[:space:]]*=' "$PROJECT_ROOT/registre.toml" 2>/dev/null \
+    && REGISTRE_DECLARES_SCOPE=true
+if [ "$REGISTRE_DECLARES_SCOPE" = false ]; then
+    [ -d "$PROJECT_ROOT/crates" ] && LIMITATION_SCAN_DIRS="$LIMITATION_SCAN_DIRS crates"
+    [ -d "$PROJECT_ROOT/src" ] && LIMITATION_SCAN_DIRS="$LIMITATION_SCAN_DIRS src"
+fi
 if [ ! -x "$LIMITATION_GATES" ]; then
     warn_validation "llm-registre not checked out — run: git submodule update --init --recursive"
-elif [ -n "$LIMITATION_SCAN_DIRS" ]; then
+elif [ "$REGISTRE_DECLARES_SCOPE" = true ] || [ -n "$LIMITATION_SCAN_DIRS" ]; then
     # Word-splitting of the dir list is intentional.
     # shellcheck disable=SC2086
     if ! (cd "$PROJECT_ROOT" && "$LIMITATION_GATES" $LIMITATION_SCAN_DIRS); then
