@@ -160,6 +160,23 @@ if ! cargo fmt --all -- --check > /dev/null 2>&1; then
     exit 1
 fi
 
+# Clippy below denies warnings through Cargo's build.warnings, not
+# `-- -D warnings`: a warning then stays a warning, the crate still builds, and
+# the run fails once at the end with every warning printed. Cargo before 1.97
+# ignores the key without a word and would pass every warning, so refuse to
+# run on one (a Homebrew cargo ahead of rustup on PATH is the usual way).
+CARGO_VERSION=$(cargo --version | awk '{print $2}')
+CARGO_MAJOR=${CARGO_VERSION%%.*}
+CARGO_MINOR=${CARGO_VERSION#*.}
+CARGO_MINOR=${CARGO_MINOR%%.*}
+if [ "$CARGO_MAJOR" -lt 1 ] || { [ "$CARGO_MAJOR" -eq 1 ] && [ "$CARGO_MINOR" -lt 97 ]; }; then
+    echo "BLOCKED: cargo $CARGO_VERSION predates build.warnings (cargo 1.97) and would"
+    echo "  ignore it. Put rustup's cargo first on PATH so rust-toolchain.toml"
+    echo "  selects the pinned toolchain."
+    exit 1
+fi
+export CARGO_BUILD_WARNINGS=deny
+
 if [ "$IS_WORKSPACE" = true ]; then
     # Workspace: scope clippy to crates whose files changed (fast local gate).
     # CI runs full workspace clippy — this is intentionally narrower.
@@ -214,7 +231,7 @@ if [ "$IS_WORKSPACE" = true ]; then
     else
         for pkg in $CHANGED_PKGS; do
             echo "Pre-push: clippy -p $pkg --all-targets --all-features"
-            if ! cargo clippy -p "$pkg" --all-targets --all-features -- -D warnings; then
+            if ! cargo clippy -p "$pkg" --all-targets --all-features; then
                 echo ""
                 echo "BLOCKED: Clippy failed for $pkg. Fix warnings before pushing."
                 exit 1
@@ -224,7 +241,7 @@ if [ "$IS_WORKSPACE" = true ]; then
 else
     # Single-crate repo — full clippy is the per-crate case.
     echo "Pre-push: cargo clippy --all-targets --all-features..."
-    if ! cargo clippy --all-targets --all-features -- -D warnings 2>&1; then
+    if ! cargo clippy --all-targets --all-features 2>&1; then
         echo ""
         echo "BLOCKED: Clippy failed. Fix all warnings before pushing."
         exit 1
