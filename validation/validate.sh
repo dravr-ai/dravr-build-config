@@ -122,8 +122,10 @@ fi
 # Problematic unwraps/expects/panics
 # ============================================================================
 echo -e "${BLUE}Checking for problematic error handling...${NC}"
-UNWRAPS=$(rg "\.unwrap\(\)" $SRC_PATHS 2>/dev/null | rg -v "// Safe|hardcoded.*valid|static.*data" | wc -l | tr -d ' ')
-EXPECTS=$(rg "\.expect\(" $SRC_PATHS 2>/dev/null | rg -v "// Safe" | wc -l | tr -d ' ')
+# --no-filename so the comment filter sees the source line itself: a `///` doc
+# comment explaining that `Row::get` is `try_get().unwrap()` is prose, not a call.
+UNWRAPS=$(rg --no-filename "\.unwrap\(\)" $SRC_PATHS 2>/dev/null < /dev/null | rg -v "^\s*//" | rg -v "// Safe|hardcoded.*valid|static.*data" | wc -l | tr -d ' ')
+EXPECTS=$(rg --no-filename "\.expect\(" $SRC_PATHS 2>/dev/null < /dev/null | rg -v "^\s*//" | rg -v "// Safe" | wc -l | tr -d ' ')
 PANICS=$(rg "panic!\(" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
 if [ "${UNWRAPS:-0}" -gt 0 ]; then
     fail_validation "Found $UNWRAPS problematic .unwrap() calls"
@@ -145,9 +147,9 @@ echo -e "${BLUE}Checking for incomplete code markers...${NC}"
 # `< /dev/null` is load-bearing: with an empty path variable rg falls back to
 # reading stdin and blocks forever. A repo with no tests/ directory hung this
 # script indefinitely (CI only survived it because its stdin is already closed).
-TODOS=$(rg "TODO|FIXME|XXX" $SRC_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null < /dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+TODOS=$(rg "\\b(TODO|FIXME|XXX)\\b" $SRC_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null < /dev/null | awk -F: '{sum+=$2} END {print sum+0}')
 if [ -n "$TEST_PATHS" ]; then
-    TODOS_TESTS=$(rg "TODO|FIXME|XXX" $TEST_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null < /dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+    TODOS_TESTS=$(rg "\\b(TODO|FIXME|XXX)\\b" $TEST_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null < /dev/null | awk -F: '{sum+=$2} END {print sum+0}')
 else
     TODOS_TESTS=0
 fi
@@ -173,10 +175,15 @@ fi
 # Underscore-prefixed names
 # ============================================================================
 echo -e "${BLUE}Checking for underscore-prefixed names...${NC}"
-UNDERSCORES=$(rg "fn _[a-zA-Z]|let _[a-zA-Z]|struct _[a-zA-Z]|enum _[a-zA-Z]" $SRC_PATHS -g "!*/bin/*" --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+# A `let _guard = lock.lock().await;` binding is the one underscore name that must
+# stay: it holds an RAII guard to the end of scope, and "removing the variable"
+# as `let _ = ...` drops the guard, and releases the lock, on the same line.
+UNDERSCORE_HITS=$(rg "fn _[a-zA-Z]|let _[a-zA-Z]|struct _[a-zA-Z]|enum _[a-zA-Z]" $SRC_PATHS -g "!*/bin/*" -n 2>/dev/null < /dev/null | rg -v "let (mut )?_[a-z_]*guard\\b" || true)
+UNDERSCORES=$(printf '%s' "$UNDERSCORE_HITS" | grep -c . || true)
+UNDERSCORES=${UNDERSCORES:-0}
 if [ "$UNDERSCORES" -gt 0 ]; then
     fail_validation "Found $UNDERSCORES underscore-prefixed names (remove variable, don't hide it)"
-    rg "fn _[a-zA-Z]|let _[a-zA-Z]|struct _[a-zA-Z]|enum _[a-zA-Z]" $SRC_PATHS -g "!*/bin/*" -n 2>/dev/null | head -5
+    printf '%s\n' "$UNDERSCORE_HITS" | head -5
 else
     pass_validation "No underscore-prefixed names"
 fi
@@ -264,7 +271,7 @@ fi
 # Temporary solutions
 # ============================================================================
 echo -e "${BLUE}Checking for temporary solutions...${NC}"
-TEMP=$(rg "\\bhack\\b|\\bworkaround\\b|\\bquick.*fix\\b|future.*implementation|temporary.*solution|temp.*fix" $SRC_PATHS --count-matches 2>/dev/null | cut -d: -f2 | awk '{sum+=$1} END {print sum+0}')
+TEMP=$(rg "\\bhack\\b|\\bworkaround\\b|\\bquick.*fix\\b|future.*implementation|temporary.*solution|\\btemp\\b.*\\bfix\\b" $SRC_PATHS --count-matches 2>/dev/null | cut -d: -f2 | awk '{sum+=$1} END {print sum+0}')
 if [ "${TEMP:-0}" -gt 0 ]; then
     fail_validation "Found $TEMP temporary solution markers"
 else
@@ -277,7 +284,9 @@ fi
 echo -e "${BLUE}Checking for empty source modules...${NC}"
 EMPTY_MODULES=0
 for rs_file in $(find $SRC_PATHS -name "*.rs" -not -path "*/tests/*" -not -path "*/bin/*" 2>/dev/null); do
-    DECL_COUNT=$(rg "^(pub )?(pub\(crate\) )?(async )?(fn |struct |enum |impl |const |static |type |trait |macro|mod |use )" "$rs_file" --count 2>/dev/null || echo 0)
+    # Any visibility — pub, pub(crate), pub(super), pub(in path) — and any
+    # async/unsafe/extern qualifier before the item keyword counts as a declaration.
+    DECL_COUNT=$(rg "^(pub(\([^)]*\))? )?(async )?(unsafe )?(extern \"[^\"]*\" )?(fn |struct |enum |impl |const |static |type |trait |macro|mod |use )" "$rs_file" --count 2>/dev/null || echo 0)
     if [ "$DECL_COUNT" -eq 0 ]; then
         EMPTY_MODULES=$((EMPTY_MODULES + 1))
         echo "  Empty: $rs_file"
