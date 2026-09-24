@@ -136,6 +136,11 @@ tracker        = "dravr-ai/carnet"
 require_ledger = true
 ```
 
+Those gates check a marker's shape. `limitation-gates.sh --verify-tracker` also checks that every
+marker names an issue that exists on the tracker, is open, and carries the `limitation` label. It
+reads the tracker over GitHub REST, so `validate.sh` never runs it at pre-push; a repo holding a
+tracker read token runs it from a scheduled workflow instead.
+
 Because it is a nested submodule, clone and CI checkout must be **recursive**
 (`git submodule update --init --recursive`, `submodules: recursive` in actions/checkout).
 

@@ -109,15 +109,24 @@ cannot silently become forever. Keep values free of `": "` and `" #"`.
 ```bash
 .build/vendor/llm-registre/limitation-gates.sh crates src        # scan dirs this repo has
 ./.build/validation/validate.sh                                  # or the full validation run
+.build/vendor/llm-registre/limitation-gates.sh --verify-tracker  # online: needs gh with read access to the tracker
 ```
 
-Expect all three gates green. In dravr-platform, `scripts/ci/architectural-validation.sh` runs the
+Expect every gate green. In dravr-platform, `scripts/ci/architectural-validation.sh` runs the
 same gates plus a repo-specific phantom-capability check.
+
+The offline gates check the marker's *shape* only. `--verify-tracker` (gate 6) also checks the
+other half of the pair: every marker in scope must name an issue that exists on the tracker, is
+open, and carries the `limitation` label. It reads the tracker over GitHub REST, so pre-push does
+not run it; a repo that holds a tracker read token runs it on a schedule (dravr-platform:
+`Monitor: Limitation Register Reconciliation`, weekly), and you can run it by hand with your own
+`gh` login before you push.
 
 ## Closing an entry
 
 Fix the gap, **delete the marker in the same change**, close the issue. A stale marker still
-exempts prose from the gates, so exhausted markers are debt of their own.
+exempts prose from the gates, so exhausted markers are debt of their own — and an issue closed
+while its marker stays fails gate 6 the next time it runs, naming the file and line.
 
 ## Consume what you declare
 
@@ -128,7 +137,8 @@ the item. CI enforces this for the canot messaging surface (`supports_*` / `max_
 
 ## What the register does not cover
 
-These gates are per-change: they stop new debt at authoring time and cannot reach the standing
+Gates 1–5 are per-change and gate 6 reconciles only what was marked: they stop new debt at
+authoring time and keep the marked inventory honest, but cannot reach the standing
 stock of defects that live between diffs — a handler nothing reaches, an override nothing reads,
 two components each locally correct and jointly wrong. Those come out of periodic adversarial
 cold-reads and get filed here like anything else. A green gate means no new unregistered debt, not
