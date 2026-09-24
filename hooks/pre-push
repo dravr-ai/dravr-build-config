@@ -1,10 +1,123 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
-# ABOUTME: Pre-push hook — runs clippy inline or checks validation marker
+# ABOUTME: Pre-push hook — refuses AI-attributed commits, then runs clippy or checks the marker
 # ABOUTME: Works for all dravr-* repos whether they have pre-push-validate.sh or not
 
 set -e
+
+# ---- No AI attribution in anything this push publishes ----
+# commit-msg refuses an AI identity or attribution line when a commit is made,
+# but a commit made with hooks bypassed, before the hooks existed, or by a
+# command that runs no commit hook (cherry-pick, revert and rebase keep the
+# original author) reaches this point unjudged. So every commit this push would
+# publish that no remote has yet is judged again, by the same rules. History
+# already on a remote is never re-judged: this push cannot change it, so it must
+# not block it. This runs before anything else, the docs-only exit included.
+HOOK_DIR=$(dirname "${BASH_SOURCE[0]}")
+# shellcheck source=hooks/ai-attribution.sh
+if ! . "$HOOK_DIR/ai-attribution.sh"; then
+    echo "BLOCKED: $HOOK_DIR/ai-attribution.sh is missing, so AI attribution cannot be checked."
+    echo "  Point core.hooksPath at the .build/hooks directory, and run:"
+    echo "    git submodule update --init --recursive .build"
+    exit 1
+fi
+
+# git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+# A terminal on stdin means the hook was run by hand, with no refs to read.
+PUSH_TIPS=()
+REMOTE_HAS=()
+if [ ! -t 0 ]; then
+    while read -r _ LOCAL_SHA _ REMOTE_SHA; do
+        # An all-zero local sha is a deletion: it publishes no commit.
+        case "$LOCAL_SHA" in *[!0]*) ;; *) continue ;; esac
+        # Tags of trees or blobs carry no commit to judge.
+        TIP=$(git rev-parse -q --verify "$LOCAL_SHA^{commit}" 2>/dev/null) || continue
+        PUSH_TIPS+=("$TIP")
+        # What the remote's ref points at is on that remote even when no
+        # remote-tracking ref has fetched it yet.
+        case "$REMOTE_SHA" in
+            *[!0]*) git cat-file -e "$REMOTE_SHA^{commit}" 2>/dev/null && REMOTE_HAS+=("$REMOTE_SHA") ;;
+        esac
+    done
+fi
+
+if [ "${#PUSH_TIPS[@]}" -gt 0 ]; then
+    # Everything after --not is excluded: commits any remote-tracking ref reaches,
+    # and commits the remote's own refs already reach. --no-show-signature keeps a
+    # log.showSignature config from splicing gpg lines into the parsed output.
+    if ! NEW_IDENTS=$(git log --no-show-signature --format='%H%x1f%an%x1f%ae%x1f%cn%x1f%ce' \
+            "${PUSH_TIPS[@]}" --not --remotes "${REMOTE_HAS[@]}"); then
+        echo "BLOCKED: could not list the commits this push publishes, so AI attribution is unchecked."
+        exit 1
+    fi
+
+    NEW_COUNT=0
+    IDENT_HITS=""
+    while IFS=$'\037' read -r SHA AUTHOR_NAME AUTHOR_EMAIL COMMITTER_NAME COMMITTER_EMAIL; do
+        [ -n "$SHA" ] || continue
+        NEW_COUNT=$((NEW_COUNT + 1))
+        if ai_identity_is_ai "$AUTHOR_NAME" "$AUTHOR_EMAIL"; then
+            IDENT_HITS="$IDENT_HITS  ${SHA:0:12}  author     $AUTHOR_NAME <$AUTHOR_EMAIL> ($AI_IDENTITY_WHY)"$'\n'
+        fi
+        if ai_identity_is_ai "$COMMITTER_NAME" "$COMMITTER_EMAIL"; then
+            IDENT_HITS="$IDENT_HITS  ${SHA:0:12}  committer  $COMMITTER_NAME <$COMMITTER_EMAIL> ($AI_IDENTITY_WHY)"$'\n'
+        fi
+    done <<< "$NEW_IDENTS"
+
+    # One line per message line, "<sha> TAB <line number> TAB <text>", so a single
+    # grep judges every message at once and can say which line matched. The sha
+    # and number fields are hex and digits, which no pattern can match.
+    MESSAGE_HITS=$(git log --no-show-signature --format='%x1e%H%x1f%B' \
+            "${PUSH_TIPS[@]}" --not --remotes "${REMOTE_HAS[@]}" |
+        awk 'BEGIN { RS = "\036"; FS = "\037" }
+             NF > 1 {
+                 msg = $2
+                 for (f = 3; f <= NF; f++) msg = msg FS $f
+                 n = split(msg, lines, "\n")
+                 for (i = 1; i <= n; i++) printf "%s\t%d\t%s\n", $1, i, lines[i]
+             }' |
+        grep -iE "$AI_MESSAGE_RE" |
+        awk -F'\t' '{ printf "  %s  message    line %s: %s\n", substr($1, 1, 12), $2, $3 }' || true)
+
+    if [ -n "$IDENT_HITS" ] || [ -n "$MESSAGE_HITS" ]; then
+        # The oldest offender in topological order is the one every other
+        # offender descends from or sits beside, so rebasing from its parent
+        # reaches them all.
+        OFFENDING=" $(printf '%s%s\n' "$IDENT_HITS" "$MESSAGE_HITS" | awk 'NF { print $1 }' | tr '\n' ' ')"
+        OLDEST=""
+        for SHA in $(git rev-list --topo-order --reverse "${PUSH_TIPS[@]}" --not --remotes "${REMOTE_HAS[@]}"); do
+            case "$OFFENDING" in *" ${SHA:0:12} "*) OLDEST=$SHA; break ;; esac
+        done
+        if [ -n "$OLDEST" ] && git rev-parse -q --verify "$OLDEST^" >/dev/null 2>&1; then
+            REBASE_BASE="${OLDEST:0:12}^"
+        else
+            REBASE_BASE="--root"
+        fi
+
+        echo ""
+        echo "BLOCKED: this push publishes commits that credit an AI tool."
+        echo ""
+        printf '%s' "$IDENT_HITS"
+        if [ -n "$MESSAGE_HITS" ]; then printf '%s\n' "$MESSAGE_HITS"; fi
+        echo ""
+        echo "Only commits no remote has yet are checked; history already pushed never blocks."
+        echo ""
+        ai_identity_fix_hint
+        echo ""
+        echo "   Then rewrite each listed commit with that identity, deleting its attribution lines:"
+        echo "     the last commit only:  git commit --amend --reset-author"
+        echo "     several commits:       git rebase -i $REBASE_BASE"
+        echo "                            (mark each listed commit 'edit', then at each stop run"
+        echo "                            git commit --amend --reset-author && git rebase --continue;"
+        echo "                            add --rebase-merges if the branch contains merges)"
+        echo ""
+        exit 1
+    fi
+    if [ "$NEW_COUNT" -gt 0 ]; then
+        echo "Pre-push: $NEW_COUNT new commit(s) carry no AI identity or attribution"
+    fi
+fi
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel)"
 GIT_DIR="$(git rev-parse --git-dir)"

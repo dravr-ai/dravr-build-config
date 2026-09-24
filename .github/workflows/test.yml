@@ -21,6 +21,8 @@ jobs:
           find . -path ./vendor -prune -o -name '*.sh' -print0 | xargs -0 -n1 bash -n
           for f in hooks/pre-commit hooks/commit-msg hooks/pre-push; do bash -n "$f"; done
       - name: shellcheck the hooks
-        run: shellcheck -S warning hooks/pre-commit
+        run: shellcheck -x -S warning hooks/pre-commit hooks/commit-msg hooks/pre-push hooks/ai-attribution.sh hooks/test-attribution.sh
       - name: pre-commit submodule guard
         run: bash hooks/test-pre-commit.sh
+      - name: AI attribution guards (commit-msg, pre-push)
+        run: bash hooks/test-attribution.sh
