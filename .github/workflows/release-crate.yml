@@ -1,0 +1,434 @@
+# ABOUTME: Reusable release for a dravr-* Rust workspace — lockstep bump, one atomic push of main and the tag
+# ABOUTME: Then the GitHub release and, when asked, crates.io in dependency order; each repo's release.yml calls it
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 dravr.ai
+#
+# Thirteen repos carried their own copy of this job and a fix landed in one copy at a
+# time. The one that mattered: `git push origin main --tags` is not atomic, so when
+# main was rejected (someone pushed during the release) the tag still went up and
+# named a commit main never had — an orphaned tag that resolves and builds
+# (run 34047973058, 2026-09-06). photograveur fixed it by pushing the branch before
+# the tag; the twelve others kept the old line. Here the branch and the tag travel
+# in one `git push --atomic`, so both land or neither does.
+#
+# A caller passes only what really differs between repos:
+#   members           workspace crates whose version moves with the root crate
+#   publish           crates to publish to crates.io, in dependency order
+#   check             a command the bumped tree must pass before it is committed
+#   ci_workflow       refuse to release while main's latest run of this CI is not green
+#   private_git_deps  resolve private dravr-ai git dependencies with RELEASE_PAT
+#   tag               republish an existing tag to crates.io without bumping anything
+#
+# The caller grants the token: `contents: write` for the push and the release, plus
+# `actions: read` when it sets ci_workflow. Nothing here widens those permissions.
+#
+# Callers reference this file at @main, the way consumers call dravr-tronc's
+# consumer-bump.yml: a fix here reaches every release without a pin to move in
+# thirteen repos, and main is what this repo's own CI (test.yml) lints.
+
+name: Release crate
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: "patch, minor or major; required unless tag is set"
+        required: false
+        type: string
+        default: ""
+      tag:
+        description: "Republish this existing tag (e.g. v2.1.0) to crates.io; skips the bump, the commit and the GitHub release"
+        required: false
+        type: string
+        default: ""
+      members:
+        description: "Space-separated workspace member directories released in lockstep with the root crate"
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "Space-separated crates to publish to crates.io, in dependency order; empty publishes nothing"
+        required: false
+        type: string
+        default: ""
+      check:
+        description: "Shell command the bumped tree must pass before it is committed; a failure releases nothing"
+        required: false
+        type: string
+        default: ""
+      ci_workflow:
+        description: "CI workflow file whose latest run on main must be green before releasing; empty skips the check"
+        required: false
+        type: string
+        default: ""
+      private_git_deps:
+        description: "Resolve private dravr-ai git dependencies with RELEASE_PAT while updating the lockfile"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        description: "crates.io token; required when publish is set"
+        required: false
+      RELEASE_PAT:
+        description: "Read token for private dravr-ai git dependencies; required when private_git_deps is true"
+        required: false
+    outputs:
+      version:
+        description: "The version released or republished, without the v prefix"
+        value: ${{ jobs.bump.outputs.version || jobs.publish.outputs.version }}
+      prev_tag:
+        description: "The tag this release follows (empty in tag mode)"
+        value: ${{ jobs.bump.outputs.prev_tag }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bump:
+    name: Bump, tag and push
+    if: inputs.tag == ''
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      prev_tag: ${{ steps.bump.outputs.prev_tag }}
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      - name: Refuse to release from anything but main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::a release is cut from main, not from ${GITHUB_REF}"
+          exit 1
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@1.98.1
+
+      - uses: Swatinem/rust-cache@v2
+        if: inputs.check != ''
+
+      - name: Refuse to release a red main
+        if: inputs.ci_workflow != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CI_WORKFLOW: ${{ inputs.ci_workflow }}
+        run: |
+          set -euo pipefail
+          # A consumer's bump gates on its own CI, but only after this tag exists, and a
+          # released-but-rejected version is a human's cleanup. Cheaper not to cut it.
+          # Without `actions: read` the list comes back empty and this fails closed.
+          CONCL=$(gh run list --workflow "${CI_WORKFLOW}" --branch main --limit 1 \
+                    --json conclusion -q '.[0].conclusion' 2>/dev/null || true)
+          if [ "${CONCL}" != "success" ]; then
+            echo "::error::main's latest ${CI_WORKFLOW} run is '${CONCL:-missing}', not success; refusing to release"
+            exit 1
+          fi
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Reach private dravr-ai git dependencies
+        if: inputs.private_git_deps
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_PAT}" ]; then
+            echo "::error::private_git_deps is set but the caller passed no RELEASE_PAT"
+            exit 1
+          fi
+          # Cargo clones git dependencies while it resolves the lockfile, and the
+          # default GITHUB_TOKEN cannot read another private repo.
+          git config --global url."https://x-access-token:${RELEASE_PAT}@github.com/dravr-ai/".insteadOf "https://github.com/dravr-ai/"
+
+      - name: Bump the root crate and its lockstep members
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+          MEMBERS: ${{ inputs.members }}
+        run: |
+          set -euo pipefail
+          # A [package] field; a same-named key in any other table is not it.
+          pkg_field() {
+            awk -v key="$2" '
+              /^\[/ { in_pkg = ($0 ~ /^\[package\][[:space:]]*(#.*)?$/) }
+              in_pkg && $1 == key && $2 == "=" { gsub(/"/, "", $3); print $3; exit }
+            ' "$1"
+          }
+
+          MANIFESTS="Cargo.toml"
+          for m in ${MEMBERS}; do
+            if [ ! -f "${m}/Cargo.toml" ]; then
+              echo "::error::lockstep member ${m} has no Cargo.toml"
+              exit 1
+            fi
+            MANIFESTS="${MANIFESTS} ${m}/Cargo.toml"
+          done
+
+          CURRENT=$(pkg_field Cargo.toml version)
+          if ! [[ "${CURRENT}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the root [package] version '${CURRENT}' is not a plain semver version"
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<< "${CURRENT}"
+          case "${BUMP}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+            *) echo "::error::bump must be patch, minor or major, not '${BUMP}'"; exit 1 ;;
+          esac
+          VERSION="${major}.${minor}.${patch}"
+          echo "Bumping ${CURRENT} -> ${VERSION}"
+
+          NAMES=""
+          for m in ${MANIFESTS}; do
+            NAME=$(pkg_field "${m}" name)
+            if [ -z "${NAME}" ]; then
+              echo "::error::${m} has no [package] name"
+              exit 1
+            fi
+            NAMES="${NAMES} ${NAME}"
+          done
+
+          # Each lockstep manifest moves its [package] version and every requirement it
+          # places on another lockstep crate (`name = { path = ..., version = ... }`, in
+          # either key order, dependencies and dev-dependencies alike). Moving one without
+          # the other leaves manifests describing a graph the repo no longer has.
+          for m in ${MANIFESTS}; do
+            sed -i -E '/^\[package\][[:space:]]*(#.*)?$/,/^\[/ s/^version = "[0-9]+\.[0-9]+\.[0-9]+"/version = "'"${VERSION}"'"/' "${m}"
+            for n in ${NAMES}; do
+              sed -i -E "/^${n} = \{.*path = /s/(version = \")[^\"]*\"/\1${VERSION}\"/" "${m}"
+            done
+          done
+
+          # Verify rather than trust the sed: a manifest whose line shape drifted would be
+          # tagged at the old version and surface a repo away, in a consumer's bump.
+          for m in ${MANIFESTS}; do
+            GOT=$(pkg_field "${m}" version)
+            if [ "${GOT}" != "${VERSION}" ]; then
+              echo "::error::${m} is at ${GOT} after the bump, expected ${VERSION}"
+              exit 1
+            fi
+            for n in ${NAMES}; do
+              if grep -E "^${n} = \{.*path = " "${m}" | grep -F 'version = "' | grep -vF "version = \"${VERSION}\""; then
+                echo "::error::${m} still requires ${n} at a version other than ${VERSION}"
+                exit 1
+              fi
+            done
+          done
+
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          {
+            echo "version=${VERSION}"
+            echo "prev_tag=${PREV_TAG}"
+            echo "root=$(pkg_field Cargo.toml name)"
+            echo "names=${NAMES# }"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update the lockfile for the workspace crates only
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          NAMES: ${{ steps.bump.outputs.names }}
+        run: |
+          set -euo pipefail
+          # Only the workspace entries move. Re-resolving every dependency here would tag a
+          # lockfile no CI run has ever built.
+          cargo update --workspace
+          # Positive proof that cargo itself reads every lockstep crate at the new version.
+          SEEN=" $(cargo metadata --format-version 1 --no-deps \
+                   | jq -r --arg v "${VERSION}" '[.packages[] | select(.version == $v) | .name] | join(" ")') "
+          for n in ${NAMES}; do
+            case "${SEEN}" in
+              *" ${n} "*) ;;
+              *) echo "::error::cargo does not see ${n} at ${VERSION}"; exit 1 ;;
+            esac
+          done
+
+      - name: Write the release notes and the changelog entry
+        id: notes
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          PREV_TAG: ${{ steps.bump.outputs.prev_tag }}
+        run: |
+          set -euo pipefail
+          RANGE="HEAD"
+          if [ -n "${PREV_TAG}" ]; then
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+          ADDED=""
+          FIXED=""
+          OTHER=""
+          # tformat, not format: every subject ends in a newline, so `read` keeps the last one.
+          while IFS= read -r msg; do
+            [ -z "${msg}" ] && continue
+            case "${msg}" in
+              feat:*|feat\(*) ADDED+="- ${msg}"$'\n' ;;
+              fix:*|fix\(*)   FIXED+="- ${msg}"$'\n' ;;
+              docs:*|chore:*|test:*|ci:*|release:*) ;;
+              *)              OTHER+="- ${msg}"$'\n' ;;
+            esac
+          done < <(git log "${RANGE}" --no-merges --pretty=tformat:%s)
+
+          NOTES="${RUNNER_TEMP}/notes.md"
+          : > "${NOTES}"
+          if [ -n "${ADDED}" ]; then printf '### Added\n\n%s\n' "${ADDED}" >> "${NOTES}"; fi
+          if [ -n "${FIXED}" ]; then printf '### Fixed\n\n%s\n' "${FIXED}" >> "${NOTES}"; fi
+          if [ -n "${OTHER}" ]; then printf '### Other\n\n%s\n' "${OTHER}" >> "${NOTES}"; fi
+
+          # A repo that keeps a CHANGELOG.md gets the entry on top; one that keeps none is
+          # not given one.
+          if [ -f CHANGELOG.md ]; then
+            {
+              echo "# Changelog"
+              echo ""
+              echo "## [${VERSION}] — $(date -u +%Y-%m-%d)"
+              echo ""
+              cat "${NOTES}"
+              tail -n +2 CHANGELOG.md
+            } > "${RUNNER_TEMP}/CHANGELOG.md"
+            mv "${RUNNER_TEMP}/CHANGELOG.md" CHANGELOG.md
+          fi
+
+          DELIM="NOTES_$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          {
+            echo "notes<<${DELIM}"
+            cat "${NOTES}"
+            echo "${DELIM}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Point the README's dependency snippets at the new version
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          ROOT: ${{ steps.bump.outputs.root }}
+        run: |
+          set -euo pipefail
+          if [ ! -f README.md ]; then
+            exit 0
+          fi
+          MAJOR_MINOR="${VERSION%.*}"
+          B='(^|[^[:alnum:]_-])'
+          # crates.io snippets carry major.minor; git snippets carry the full tag.
+          sed -i -E \
+            -e "s/${B}(${ROOT} = \")[0-9]+\.[0-9]+\"/\1\2${MAJOR_MINOR}\"/g" \
+            -e "s/${B}(${ROOT} = \{ version = \")[0-9]+\.[0-9]+\"/\1\2${MAJOR_MINOR}\"/g" \
+            -e "/${B}${ROOT} = \{[^}]*git = /s/(tag = \"v)[0-9]+\.[0-9]+\.[0-9]+\"/\1${VERSION}\"/" \
+            README.md
+
+      - name: Check the bumped tree
+        if: inputs.check != ''
+        env:
+          CHECK: ${{ inputs.check }}
+        run: bash -euo pipefail -c "${CHECK}"
+
+      - name: Commit, tag, and push main and the tag atomically
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          MEMBERS: ${{ inputs.members }}
+        run: |
+          set -euo pipefail
+          git add Cargo.toml Cargo.lock
+          for m in ${MEMBERS}; do
+            git add "${m}/Cargo.toml"
+          done
+          if [ -f CHANGELOG.md ]; then git add CHANGELOG.md; fi
+          if [ -f README.md ]; then git add README.md; fi
+          if git diff --cached --quiet; then
+            echo "::error::the bump staged nothing"
+            exit 1
+          fi
+          git commit -m "release: v${VERSION}"
+          git tag -a "v${VERSION}" -m "v${VERSION}"
+          git push --atomic origin "HEAD:refs/heads/main" "refs/tags/v${VERSION}"
+
+  publish:
+    name: Publish to crates.io
+    needs: bump
+    if: >-
+      ${{ !cancelled() && inputs.publish != '' &&
+      (needs.bump.result == 'success' || (needs.bump.result == 'skipped' && inputs.tag != '')) }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Resolve the version to publish
+        id: v
+        env:
+          TAG: ${{ inputs.tag }}
+          BUMPED: ${{ needs.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${BUMPED}"
+          if [ -n "${TAG}" ]; then
+            VERSION="${TAG#v}"
+          fi
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'${VERSION}' is not a release version"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ steps.v.outputs.version }}
+          # clippy.toml is a symlink into the .build submodule; cargo package fails on
+          # the dangling link without it.
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@1.98.1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CRATES: ${{ inputs.publish }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "::error::publish is set but the caller passed no CARGO_REGISTRY_TOKEN"
+            exit 1
+          fi
+          # crates.io answers a request without a User-Agent with 403.
+          UA="dravr-release (github.com/${GITHUB_REPOSITORY})"
+          for crate in ${CRATES}; do
+            # A re-run skips what already landed; every other publish failure fails the job.
+            if curl -fs -o /dev/null -A "${UA}" "https://crates.io/api/v1/crates/${crate}/${VERSION}"; then
+              echo "${crate} ${VERSION} is already on crates.io, skipping"
+              continue
+            fi
+            # cargo publish returns once the crate is in the index, so the next crate in
+            # the list can already resolve it.
+            cargo publish -p "${crate}"
+          done
+
+  github-release:
+    name: GitHub release
+    needs: [bump, publish]
+    if: >-
+      ${{ !cancelled() && needs.bump.result == 'success' &&
+      (needs.publish.result == 'success' || needs.publish.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the release for the new tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.bump.outputs.version }}
+          NOTES: ${{ needs.bump.outputs.notes }}
+        run: |
+          set -euo pipefail
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "v${VERSION} already has a release"
+            exit 0
+          fi
+          printf '%s\n' "${NOTES:-No changes recorded.}" > "${RUNNER_TEMP}/notes.md"
+          gh release create "v${VERSION}" --verify-tag --title "v${VERSION}" \
+            --notes-file "${RUNNER_TEMP}/notes.md"

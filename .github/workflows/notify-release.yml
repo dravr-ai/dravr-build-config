@@ -1,0 +1,99 @@
+# ABOUTME: Reusable release announcement — one repository_dispatch telling the integrating repo a release exists
+# ABOUTME: Each dravr-* satellite calls it with its own event name; the version always travels without its v prefix
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 dravr.ai
+#
+# Seven satellites carried a near-identical copy of this job and three more had their
+# own shape; a fix landed in one copy at a time (only embacle's ran under pipefail and
+# normalised the version). One copy now serves all of them.
+#
+# The payload is { version, sha }: the version without its v prefix, the vocabulary
+# of the manifests, and the sha of the commit that tag names. The receiving lane
+# verifies the version against the registry or the tag before acting — this dispatch
+# is a prompt, not an authority.
+#
+# Call it from the satellite's release workflow, never from an `on: release` trigger:
+# a release created with the default GITHUB_TOKEN starts no workflow run, so such a
+# trigger can never fire. sciotte's notifier logged zero runs across five releases
+# that way while looking perfectly wired.
+
+name: Notify release
+
+on:
+  workflow_call:
+    inputs:
+      event:
+        description: "repository_dispatch event_type the receiving lane listens for, e.g. cageux-released"
+        required: true
+        type: string
+      version:
+        description: "Release to announce, with or without the v prefix; empty announces the latest GitHub release"
+        required: false
+        type: string
+        default: ""
+      repository:
+        description: "owner/repo that receives the dispatch"
+        required: false
+        type: string
+        default: dravr-ai/dravr-platform
+    secrets:
+      DISPATCH_TOKEN:
+        description: "Token allowed to create repository_dispatch events on the receiving repository"
+        required: true
+
+jobs:
+  notify:
+    name: Dispatch ${{ inputs.event }} to ${{ inputs.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve the version and the commit its tag names
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION:-}"
+          if [ -z "${VERSION}" ]; then
+            VERSION=$(gh release view --json tagName -q .tagName)
+          fi
+          # A release workflow passes a bare version, `gh release view` returns a
+          # v-prefixed tag, and a human may type either.
+          VERSION="${VERSION#v}"
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'${VERSION}' is not a release version to announce"
+            exit 1
+          fi
+          # The tag's commit, not GITHUB_SHA: a release run starts on main before its own
+          # release commit exists, so GITHUB_SHA names the commit the release came after.
+          SHA=$(gh api "repos/${GH_REPO}/commits/v${VERSION}" -q .sha)
+          {
+            echo "version=${VERSION}"
+            echo "sha=${SHA}"
+          } >> "$GITHUB_OUTPUT"
+          echo "announcing ${VERSION} (${SHA})"
+
+      - name: Fire repository_dispatch
+        env:
+          # A PAT whose REPOSITORY ACCESS decides reach, not the secret's visibility: the
+          # same org secret reached 1 of 11 repos until its access was widened on
+          # 2026-09-05. On the free plan an org secret also reaches public repos only, so
+          # a private satellite needs a repo-level secret of the same name (carnet#472).
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          TARGET: ${{ inputs.repository }}
+          EVENT: ${{ inputs.event }}
+          VERSION: ${{ steps.v.outputs.version }}
+          SHA: ${{ steps.v.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::the dispatch token is empty in ${GITHUB_REPOSITORY}; a private repo needs a repo-level secret"
+            exit 1
+          fi
+          gh api -X POST "repos/${TARGET}/dispatches" \
+            -f event_type="${EVENT}" \
+            -f "client_payload[version]=${VERSION}" \
+            -f "client_payload[sha]=${SHA}"
+          echo "dispatched ${EVENT} ${VERSION} to ${TARGET}"

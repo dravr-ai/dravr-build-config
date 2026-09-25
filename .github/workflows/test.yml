@@ -1,4 +1,4 @@
-# ABOUTME: Tests the shared shell tooling on every push — syntax, shellcheck, and the hook guards
+# ABOUTME: Tests the shared tooling on every push — shell syntax, shellcheck, the hook guards, the reusable workflows
 # ABOUTME: Everything here is offline: no token, no network, no repo state touched
 name: test
 
@@ -26,3 +26,17 @@ jobs:
         run: bash hooks/test-pre-commit.sh
       - name: AI attribution guards (commit-msg, pre-push)
         run: bash hooks/test-attribution.sh
+
+  # release-crate.yml and notify-release.yml are called at @main by every satellite's
+  # release, so a broken expression or script here breaks thirteen releases at once.
+  # actionlint checks the workflow syntax, the expressions and, through shellcheck,
+  # every run: block.
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint every workflow
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color

@@ -26,6 +26,8 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
 - `validation/` — Architectural validation script + pattern definitions
 - `hooks/` — Git hooks (pre-commit, commit-msg, pre-push); `ai-attribution.sh` holds the rules the last two share
 - `ci/` — Reusable CI helpers, plus `bootstrap-repo.sh` (see below)
+- `.github/workflows/` — reusable workflows every satellite calls: `release-crate.yml` and
+  `notify-release.yml` (see below)
 - `docs/AGENTS_DISCIPLINE.md` — Shared architectural discipline rules for AI agents
 - `skills/` — Claude Code skills shared across repos; symlink them into your `.claude/skills/`
 - `vendor/llm-registre/` — submodule: the [llm-registre](https://github.com/dravr-ai/llm-registre)
@@ -120,6 +122,48 @@ revert, rebase and `commit --no-verify` run no commit hook, so `hooks/pre-push` 
 pushed commit that no remote has yet, lists each offending sha with the reason, and prints the
 amend or rebase that fixes it; history already on a remote never blocks a push.
 `hooks/test-attribution.sh` makes each path fire.
+
+## Reusable release workflows
+
+Every dravr-* satellite cuts its releases through `release-crate.yml` and announces them
+through `notify-release.yml`, called at `@main` like dravr-tronc's `consumer-bump.yml`: a fix
+here reaches every repo's next release with no pin to move. A public repo's workflows are
+callable from the org's private repos. `test.yml` runs actionlint over both on every push.
+
+`release-crate.yml` bumps the root crate and its lockstep members (their `[package]` version
+and every `path` + `version` requirement one places on another), verifies the result, updates
+only the workspace entries of `Cargo.lock`, prepends a `CHANGELOG.md` entry when the repo keeps
+one, points the README's dependency snippets at the new version, commits, and pushes `main` and
+the tag in **one `git push --atomic`**, so an orphaned tag cannot happen. It then publishes to
+crates.io and creates the GitHub release.
+
+| Input | Meaning |
+|---|---|
+| `bump` | `patch`, `minor` or `major` |
+| `members` | member directories released in lockstep with the root crate |
+| `publish` | crates to publish to crates.io, in dependency order; empty publishes nothing |
+| `check` | a command the bumped tree must pass before it is committed |
+| `ci_workflow` | refuse to release while main's latest run of this CI is not green (grant `actions: read`) |
+| `private_git_deps` | resolve private dravr-ai git dependencies with the `RELEASE_PAT` secret |
+| `tag` | republish an existing tag to crates.io: no bump, no commit, no GitHub release |
+
+Secrets: `CARGO_REGISTRY_TOKEN` (with `publish`), `RELEASE_PAT` (with `private_git_deps`).
+Outputs: `version` (no `v` prefix) and `prev_tag`. The caller grants `contents: write`, and keeps
+its repo-specific jobs (binaries, images, Homebrew) behind `needs:` on the calling job.
+
+```yaml
+jobs:
+  release:
+    uses: dravr-ai/dravr-build-config/.github/workflows/release-crate.yml@main
+    with:
+      bump: ${{ inputs.bump }}
+      members: crates/dravr-foo-mcp crates/dravr-foo-server
+```
+
+`notify-release.yml` sends one `repository_dispatch` with `{ version, sha }`: the version without
+its `v` prefix and the commit its tag names. Inputs: `event` (the receiving lane's event type),
+`version` (empty announces the latest release) and `repository` (default
+`dravr-ai/dravr-platform`); secret `DISPATCH_TOKEN`.
 
 ## Shared skills
 
