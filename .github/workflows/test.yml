@@ -1,5 +1,5 @@
-# ABOUTME: Tests the shared tooling on every push — shell syntax, shellcheck, the hook guards, the reusable workflows
-# ABOUTME: Everything here is offline: no token, no network, no repo state touched
+# ABOUTME: Tests the shared tooling on every push — shell syntax, shellcheck, the hook guards, the satellite gate, the reusable workflows
+# ABOUTME: No token and no repo state touched; only the toolchain and ripgrep installs reach the network
 name: test
 
 on:
@@ -26,6 +26,24 @@ jobs:
         run: bash hooks/test-pre-commit.sh
       - name: AI attribution guards (commit-msg, pre-push)
         run: bash hooks/test-attribution.sh
+
+  # Every satellite's pre-push gate is validation/satellite-pre-push-validate.sh, so a
+  # tier that stops firing here stops firing in all of them. The test builds a
+  # dependency-free crate on the toolchain the satellites pin.
+  satellite-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: clippy, rustfmt
+      - name: Install ripgrep
+        run: sudo apt-get install -y ripgrep
+      - name: shellcheck the gate and its test
+        run: shellcheck -x -S warning validation/satellite-pre-push-validate.sh validation/test-satellite-pre-push-validate.sh
+      - name: satellite pre-push gate
+        run: bash validation/test-satellite-pre-push-validate.sh
 
   # release-crate.yml and notify-release.yml are called at @main by every satellite's
   # release, so a broken expression or script here breaks thirteen releases at once.
