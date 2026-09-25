@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
 # ABOUTME: Commit message format validation
-# ABOUTME: Enforces a <=72-char subject, a blank line 2, and no AI attribution
+# ABOUTME: Enforces a <=72-char subject, a blank line 2, and no AI identity or attribution
 
 # Maximum length of the subject line.
 #
@@ -14,6 +14,46 @@
 MAX_SUBJECT=72
 
 MSG_FILE="$1"
+
+# The AI-attribution rules are shared with pre-push, which judges the same
+# commits again before they leave the machine. A missing rules file refuses
+# the commit: without it every check below would pass by matching nothing.
+HOOK_DIR=$(dirname "${BASH_SOURCE[0]}")
+# shellcheck source=hooks/ai-attribution.sh
+if ! . "$HOOK_DIR/ai-attribution.sh"; then
+    echo "❌ ERROR: $HOOK_DIR/ai-attribution.sh is missing, so AI attribution cannot be checked."
+    echo "   Point core.hooksPath at the .build/hooks directory, and run:"
+    echo "     git submodule update --init --recursive .build"
+    exit 1
+fi
+
+# No AI identity. This hook, not pre-commit, holds the check because it is the
+# one hook every commit-creating command runs: `git commit` (plain, --amend,
+# --squash results, a conflicted merge's conclusion) and `git merge` itself,
+# which runs pre-merge-commit and commit-msg but never pre-commit. `git var`
+# reports the identity git is about to record, including an --author= flag and
+# the original author an --amend keeps. Commands that run no commit hook at all
+# (cherry-pick, revert, rebase) are caught by pre-push instead.
+for ROLE in author:GIT_AUTHOR_IDENT committer:GIT_COMMITTER_IDENT; do
+    LABEL=${ROLE%%:*}
+    IDENT=$(git var "${ROLE#*:}" 2>/dev/null) || IDENT=""
+    if [ -z "$IDENT" ]; then
+        echo "❌ ERROR: could not read the $LABEL identity (git var ${ROLE#*:} failed)."
+        ai_identity_fix_hint
+        exit 1
+    fi
+    NAME=${IDENT%% <*}
+    EMAIL=${IDENT#*<}
+    EMAIL=${EMAIL%%>*}
+    if ai_identity_is_ai "$NAME" "$EMAIL"; then
+        echo "❌ ERROR: the $LABEL of this commit is an AI identity ($AI_IDENTITY_WHY):"
+        echo "   $NAME <$EMAIL>"
+        echo ""
+        ai_identity_fix_hint
+        exit 1
+    fi
+done
+
 # Drop git's template comments and any trailing blank lines before counting.
 BODY=$(grep -v '^#' "$MSG_FILE" | sed -e :a -e '/^\n*$/{$d;N;};/\n$/ba')
 LINE_COUNT=$(printf '%s\n' "$BODY" | wc -l | tr -d ' ')
@@ -61,9 +101,19 @@ if [ "$LINE_COUNT" -gt 1 ] && [ -n "$SECOND" ]; then
     exit 1
 fi
 
-# No AI attribution
-if grep -qiE "Co-Authored-By.*claude|Co-Authored-By.*anthropic|Generated with|🤖" "$MSG_FILE"; then
-    echo "❌ ERROR: AI-generated commit signatures are not allowed"
+# No AI attribution in the message. Only what sits above git's scissors line is
+# the message: the diff `git commit -v` appends below it is never committed, and a
+# diff of this very hook would otherwise refuse its own commit.
+ATTRIBUTION=$(sed -n '/------------------------ >8 ------------------------$/q;p' "$MSG_FILE" |
+    grep -niE "$AI_MESSAGE_RE" || true)
+if [ -n "$ATTRIBUTION" ]; then
+    echo "❌ ERROR: AI attribution is not allowed in commit messages"
+    echo ""
+    printf '%s\n' "$ATTRIBUTION" | sed -E 's/^([0-9]+):/   line \1: /'
+    echo ""
+    echo "Delete the line(s) above and commit again. A commit credits only the human"
+    echo "who makes it: no Co-Authored-By for an AI tool, no Claude-Session trailer,"
+    echo "no claude.ai/code link, no \"Generated with\" footer, no 🤖."
     exit 1
 fi
 

@@ -24,7 +24,7 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
 
 - `cargo/` — Canonical Cargo lint config, clippy.toml, rustfmt.toml, deny.toml
 - `validation/` — Architectural validation script + pattern definitions
-- `hooks/` — Git hooks (pre-commit, commit-msg)
+- `hooks/` — Git hooks (pre-commit, commit-msg, pre-push); `ai-attribution.sh` holds the rules the last two share
 - `ci/` — Reusable CI helpers, plus `bootstrap-repo.sh` (see below)
 - `docs/AGENTS_DISCIPLINE.md` — Shared architectural discipline rules for AI agents
 - `skills/` — Claude Code skills shared across repos; symlink them into your `.claude/skills/`
@@ -107,6 +107,19 @@ A deliberate rollback stays possible — stage the submodule by itself and the g
 instead of refusing. When the submodule is not checked out the direction cannot be
 determined, and the hook says so rather than passing quietly. `hooks/test-pre-commit.sh`
 makes every one of those paths fire.
+
+## No AI attribution
+
+A commit credits only the human who makes it. `hooks/commit-msg` refuses a commit whose author
+or committer (`git var GIT_AUTHOR_IDENT` / `GIT_COMMITTER_IDENT`) is named exactly `Claude` or
+has an `@anthropic.com` address, and a message line matching `hooks/ai-attribution.sh`: a
+Co-Authored-By for Claude or Anthropic, `Generated with`, 🤖, a `Claude-Session:` trailer, a
+`claude.ai/code` link, or `noreply@anthropic.com`. It runs for `git commit` (with `--amend` and
+after `merge --squash`) and for `git merge` itself, which never runs pre-commit. Cherry-pick,
+revert, rebase and `commit --no-verify` run no commit hook, so `hooks/pre-push` judges again every
+pushed commit that no remote has yet, lists each offending sha with the reason, and prints the
+amend or rebase that fixes it; history already on a remote never blocks a push.
+`hooks/test-attribution.sh` makes each path fire.
 
 ## Shared skills
 
