@@ -160,7 +160,8 @@ fi
 # If the project has pre-push-validate.sh, enforce the marker system.
 # Otherwise, run an inline clippy gate scoped to changed crates.
 if [ -f "$VALIDATE_SCRIPT" ]; then
-    # ---- Marker-based validation (dravr-platform and similar) ----
+    # ---- Marker-based validation (dravr-platform, and every satellite through ----
+    # ---- validation/satellite-pre-push-validate.sh) ----
     if [ ! -f "$MARKER_FILE" ]; then
         echo ""
         echo "BLOCKED: No validation marker found."

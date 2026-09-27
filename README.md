@@ -23,9 +23,12 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
 ## Structure
 
 - `cargo/` — Canonical Cargo lint config, clippy.toml, rustfmt.toml, deny.toml
-- `validation/` — Architectural validation script + pattern definitions
+- `validation/` — Architectural validation script + pattern definitions, and
+  `satellite-pre-push-validate.sh`, the pre-push gate every satellite runs (see below)
 - `hooks/` — Git hooks (pre-commit, commit-msg, pre-push); `ai-attribution.sh` holds the rules the last two share
 - `ci/` — Reusable CI helpers, plus `bootstrap-repo.sh` (see below)
+- `.github/workflows/` — reusable workflows every satellite calls: `release-crate.yml` and
+  `notify-release.yml` (see below)
 - `docs/AGENTS_DISCIPLINE.md` — Shared architectural discipline rules for AI agents
 - `skills/` — Claude Code skills shared across repos; symlink them into your `.claude/skills/`
 - `vendor/llm-registre/` — submodule: the [llm-registre](https://github.com/dravr-ai/llm-registre)
@@ -108,6 +111,43 @@ instead of refusing. When the submodule is not checked out the direction cannot 
 determined, and the hook says so rather than passing quietly. `hooks/test-pre-commit.sh`
 makes every one of those paths fire.
 
+## Satellite pre-push gate
+
+`hooks/pre-push` looks for `scripts/ci/pre-push-validate.sh`. When a repo has one, the hook runs
+no gate of its own and admits a push only when `.git/validation-passed` holds
+`<unix time> <sha>` naming HEAD and under 15 minutes old. When it has none, the hook falls back
+to an inline gate that clippies only the changed crates and never runs a test.
+
+Every satellite therefore carries that script as a thin wrapper around
+`validation/satellite-pre-push-validate.sh`, so one gate serves them all:
+
+```bash
+#!/bin/bash
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
+GATE=.build/validation/satellite-pre-push-validate.sh
+if [ ! -f "$GATE" ]; then
+    echo "BLOCKED: $GATE is missing. Run: git submodule update --init --recursive .build"
+    exit 1
+fi
+SATELLITE_FEATURES="--features all-channels" exec bash "$GATE" "$@"
+```
+
+The `.build` gitlink pins a commit, so a satellite gets the gate, and any later change to it,
+only when its `.build` pointer moves to a commit that has it.
+
+| Tier | Runs |
+|---|---|
+| toolchain | refuses a cargo older than 1.97, which would ignore `build.warnings` |
+| 0 | `validation/validate.sh` (the hook's inline tier, which the marker path skips) |
+| 1 | `cargo fmt --all -- --check` |
+| 2 | `CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets $SATELLITE_FEATURES` |
+| 3 | `cargo test --workspace $SATELLITE_FEATURES` with warnings denied; a run where no test ran fails |
+
+`SATELLITE_FEATURES` defaults to `--all-features`; set it to what the repo's CI passes. Any earlier
+marker is deleted first, so only a run that passed every tier leaves one.
+`validation/test-satellite-pre-push-validate.sh` makes every tier fire on a throwaway crate and
+proves the hook admits the marker.
+
 ## No AI attribution
 
 A commit credits only the human who makes it. `hooks/commit-msg` refuses a commit whose author
@@ -120,6 +160,48 @@ revert, rebase and `commit --no-verify` run no commit hook, so `hooks/pre-push` 
 pushed commit that no remote has yet, lists each offending sha with the reason, and prints the
 amend or rebase that fixes it; history already on a remote never blocks a push.
 `hooks/test-attribution.sh` makes each path fire.
+
+## Reusable release workflows
+
+Every dravr-* satellite cuts its releases through `release-crate.yml` and announces them
+through `notify-release.yml`, called at `@main` like dravr-tronc's `consumer-bump.yml`: a fix
+here reaches every repo's next release with no pin to move. A public repo's workflows are
+callable from the org's private repos. `test.yml` runs actionlint over both on every push.
+
+`release-crate.yml` bumps the root crate and its lockstep members (their `[package]` version
+and every `path` + `version` requirement one places on another), verifies the result, updates
+only the workspace entries of `Cargo.lock`, prepends a `CHANGELOG.md` entry when the repo keeps
+one, points the README's dependency snippets at the new version, commits, and pushes `main` and
+the tag in **one `git push --atomic`**, so an orphaned tag cannot happen. It then publishes to
+crates.io and creates the GitHub release.
+
+| Input | Meaning |
+|---|---|
+| `bump` | `patch`, `minor` or `major` |
+| `members` | member directories released in lockstep with the root crate |
+| `publish` | crates to publish to crates.io, in dependency order; empty publishes nothing |
+| `check` | a command the bumped tree must pass before it is committed |
+| `ci_workflow` | refuse to release while main's latest run of this CI is not green (grant `actions: read`) |
+| `private_git_deps` | resolve private dravr-ai git dependencies with the `RELEASE_PAT` secret |
+| `tag` | republish an existing tag to crates.io: no bump, no commit, no GitHub release |
+
+Secrets: `CARGO_REGISTRY_TOKEN` (with `publish`), `RELEASE_PAT` (with `private_git_deps`).
+Outputs: `version` (no `v` prefix) and `prev_tag`. The caller grants `contents: write`, and keeps
+its repo-specific jobs (binaries, images, Homebrew) behind `needs:` on the calling job.
+
+```yaml
+jobs:
+  release:
+    uses: dravr-ai/dravr-build-config/.github/workflows/release-crate.yml@main
+    with:
+      bump: ${{ inputs.bump }}
+      members: crates/dravr-foo-mcp crates/dravr-foo-server
+```
+
+`notify-release.yml` sends one `repository_dispatch` with `{ version, sha }`: the version without
+its `v` prefix and the commit its tag names. Inputs: `event` (the receiving lane's event type),
+`version` (empty announces the latest release) and `repository` (default
+`dravr-ai/dravr-platform`); secret `DISPATCH_TOKEN`.
 
 ## Shared skills
 
