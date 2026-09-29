@@ -30,7 +30,8 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
 - `.github/workflows/` — reusable workflows every satellite calls: `release-crate.yml` and
   `notify-release.yml` (see below)
 - `docs/AGENTS_DISCIPLINE.md` — Shared architectural discipline rules for AI agents
-- `skills/` — Claude Code skills shared across repos; symlink them into your `.claude/skills/`
+- `skills/` — Claude Code skills shared across repos, linked into your `.claude/skills/` by
+  `bootstrap-repo.sh`; `skills/lib/` is the shell library the worktree skills source (see below)
 - `vendor/llm-registre/` — submodule: the [llm-registre](https://github.com/dravr-ai/llm-registre)
   limitation-register gates, run by `validate.sh`
 
@@ -55,8 +56,8 @@ future pulls self-heal, then repairs the current checkout:
 | `core.hooksPath=.build/hooks` | hooks resolve, in worktrees too |
 
 It then checks out a missing or stale submodule (nested `vendor/` included), symlinks
-every `skills/` entry this repo does not already define, and reports dead symlinks and
-missing hooks. It **never** moves a `.build` that is dirty or on a branch — it warns
+every `skills/` directory holding a `SKILL.md` that this repo does not already define, and
+reports dead symlinks and missing hooks. It **never** moves a `.build` that is dirty or on a branch — it warns
 instead — and it always exits 0, because a session-start hook that fails tells you
 nothing useful.
 
@@ -207,7 +208,10 @@ its `v` prefix and the commit its tag names. Inputs: `event` (the receiving lane
 
 `skills/` ships Claude Code skills every consumer exposes through a symlink in its
 `.claude/skills/` (`bootstrap-repo.sh` creates the links; commit them). Each is a `SKILL.md`,
-optionally with the script it wraps.
+optionally with the script it wraps. A directory without a `SKILL.md` is not a skill and is
+never linked: `skills/lib/worktree.sh` is the library the worktree scripts source, found
+through each script's own path with every symlink resolved, so it works whether the script
+runs as `.claude/skills/<skill>/…` or `.build/skills/<skill>/…`.
 
 A skill only belongs here when more than one repo uses it. A submodule needs a second update
 step to move, so a consumer can sit on the newest commit and still resolve the skill through a
@@ -218,6 +222,68 @@ only ever used by that one repo, so the submodule bought nothing and cost that f
 | Skill | Purpose |
 |---|---|
 | `register-limitation` | file a limitation issue (through `carnet create`), write the `LIMITATION(registre#n)` marker, ledger a dark launch |
+| `create-worktree` | a feature branch in its own worktree, with `.build` checked out (else no hook runs there), `.envrc`/`.mcp.json` copied when present, and the session's ownership stamp |
+| `finish-worktree` | rebase onto `origin/main`, the repo's pre-push gate, push, CI; then `merge-and-cleanup.sh` squash-lands on `main` and removes the branch and worktree; `prune-stale-branches.sh` deletes leftover branches whose work is provably on `main` |
+
+### Worktree skills
+
+Every dravr repo lands work the same way — no pull request, a squash onto `main` — so the
+scripts live here once instead of drifting per repo. Nothing in them names a repository:
+
+- **Repo identity** — `owner/name` comes from `origin`'s configured URL (`gh repo view` when
+  that is not a GitHub URL) and names the `gh run list --repo` command and the Actions link
+  they print. A remote that is neither prints no link rather than a guessed one.
+- **The gate** — `scripts/ci/pre-push-validate.sh` when the repo has one (the platform's own,
+  or the satellite wrapper above). Without one, the scripts say so and the push runs
+  `hooks/pre-push`'s inline gate; they refuse to push at all when that hook is not armed
+  either (`git rev-parse --git-path hooks` has no executable `pre-push`).
+- **Worktree layout** — `<parent of the main worktree>/<prefix>-<branch, / as ->`, where
+  `<prefix>` is the main worktree's directory name. A repo whose worktrees carry another name
+  commits a `.claude/worktree.conf`, read from the main worktree and never sourced:
+
+  ```
+  # Feature worktrees are <parent of the main worktree>/<prefix>-<branch>.
+  prefix = pierre_mcp_server
+  ```
+
+  dravr-platform needs exactly that file: its worktrees predate the rename. A prefix must be
+  one plain directory name, or the scripts refuse it.
+- **Hand-off** — `finish-worktree.sh` writes `<branch>|<worktree>` to
+  `.claude/skills/.last-feature-branch` in the main worktree, where `merge-and-cleanup.sh`
+  runs and reads it.
+
+`merge-and-cleanup.sh` refuses when it is off `main` or outside the main worktree, when
+uncommitted work in the main worktree overlaps the branch, when anything is staged there
+(the squash commit takes the whole index), when local `main` cannot fast-forward to
+`origin/main` or carries commits it lacks, and when `origin/main` moves during the gate or
+the push is rejected — the squash then stays on local `main`, the recovery is printed, and
+nothing is cleaned up. Cleanup runs only once the work is on `origin/main`, and the remote
+branch is deleted last; a rerun after a squash landed by hand finds nothing to merge and
+only cleans up. A squash that moves `.build` is validated on the new `.build`
+(`git submodule update` before the gate), and a worktree carrying the submodule is
+`deinit`ed before `git worktree remove --force`. Because that removal destroys whatever the
+tree holds, it only removes the tree git has the branch checked out in (`feature/a-b` and
+`feature-a/b` share a directory name) and only when the tree holds nothing a commit lacks —
+checked before the squash, and again before the removal, where it stops with exit 3.
+
+`skills/test-worktree-skills.sh` builds a throwaway `.build` from this checkout, a consumer
+with a bare origin and a stub gate, and drives every path above through real hooks. It also
+pins `skills/lib/worktree.sh`'s facts from both kinds of worktree — main versus current root,
+the feature path, the hand-off file — and the ownership stamp that dravr-platform's
+`bin/worktrees.sh` and the status line read.
+
+Adopting them in a repo that carries its own copies:
+
+1. Move `.build` to a commit that has them (`git -C .build checkout <sha>`, `git add .build`).
+2. `git rm -r .claude/skills/finish-worktree .claude/skills/create-worktree` (and
+   `.claude/skills/lib` where it exists): a real directory shadows the shared skill forever.
+   Anything else that sourced the old `lib/worktree.sh` sources the **main** worktree's
+   `.build/skills/lib/worktree.sh` instead — a worktree added by hand has an empty `.build`
+   until its submodule is initialized — and a local test of that library goes, since
+   `skills/test-worktree-skills.sh` covers it here.
+3. `bash .build/ci/bootstrap-repo.sh`, then `git add .claude/skills/finish-worktree
+   .claude/skills/create-worktree` to commit the two links.
+4. When existing worktrees use another prefix, commit `.claude/worktree.conf` as above.
 
 ## Limitation register
 

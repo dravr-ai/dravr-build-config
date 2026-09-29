@@ -145,7 +145,9 @@ fi
 # Skills shipped in .build/skills are shared across every consumer repo, but each
 # repo still has to expose them under .claude/skills. Linking is idempotent and
 # only ever creates a name that is absent — a real directory of the same name is
-# a repo-local skill and always wins.
+# a repo-local skill and always wins. A directory without a SKILL.md is not a
+# skill (skills/lib holds the shell library the worktree skills source through
+# their own resolved path), so it is never linked.
 SKILL_DIR="$REPO_ROOT/.claude/skills"
 if [ -n "$(ls -A "$REPO_ROOT/.build/skills" 2>/dev/null)" ]; then
     # A repo consuming .build is a Claude Code repo, so when it has no skills
@@ -154,7 +156,7 @@ if [ -n "$(ls -A "$REPO_ROOT/.build/skills" 2>/dev/null)" ]; then
     # skill from exactly the repos that have none of their own.
     mkdir -p "$SKILL_DIR"
     for shared in "$REPO_ROOT"/.build/skills/*/; do
-        [ -d "$shared" ] || continue
+        [ -f "$shared/SKILL.md" ] || continue
         name=$(basename "$shared")
         target="$SKILL_DIR/$name"
         # -e follows symlinks, -L catches a dangling one: together they mean
