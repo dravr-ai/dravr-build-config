@@ -23,7 +23,8 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
 ## Structure
 
 - `cargo/` — Canonical Cargo lint config, clippy.toml, rustfmt.toml, deny.toml
-- `validation/` — Architectural validation script + pattern definitions, and
+- `validation/` — Architectural validation script + pattern definitions, `test-module-lines.sh`
+  (the unit-test filter its scans share, see Extending), and
   `satellite-pre-push-validate.sh`, the pre-push gate every satellite runs (see below)
 - `hooks/` — Git hooks (pre-commit, commit-msg, pre-push); `ai-attribution.sh` holds the rules the last two share
 - `ci/` — Reusable CI helpers, plus `bootstrap-repo.sh` (see below)
@@ -308,3 +309,20 @@ Because it is a nested submodule, clone and CI checkout must be **recursive**
 ## Extending
 
 Create `validation-patterns.local.toml` in your repo root to add project-specific rules. Local rules extend (never weaken) the baseline.
+
+### Unit tests in `src/`
+
+`validate.sh`'s unwrap/expect/panic, mock and underscore-name scans skip a file's trailing
+`#[cfg(test)] mod tests { ... }` through `validation/test-module-lines.sh`: a unit test's
+`unwrap` is test code, exactly as it is under `tests/`. The filter assumes the Rust convention
+(an inline test module, attached to a column-0 `#[cfg(test)]`, as the file's last item), and
+`validate.sh` reports every file that breaks it as a warning. A repo that wants a broken layout
+to fail sets, in `validation-patterns.local.toml`:
+
+```toml
+[test_modules]
+enforce_layout = true
+```
+
+A repo's own scans can reuse the filter: pipe `rg -n --with-filename PATTERN crates/*/src`
+through `.build/validation/test-module-lines.sh`. `validation/test-test-module-lines.sh` pins it.

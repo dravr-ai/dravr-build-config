@@ -55,6 +55,23 @@ jobs:
       - name: satellite pre-push gate
         run: bash validation/test-satellite-pre-push-validate.sh
 
+  # validate.sh is every consumer's shared text scan, and its unwrap/expect/panic,
+  # mock and underscore counts skip a trailing #[cfg(test)] module through
+  # test-module-lines.sh. The test drives the filter, its layout check, and
+  # validate.sh itself on fixture repos, so a scan that starts counting test code
+  # (or stops counting production code) fails here before it reaches a consumer.
+  validation-scans:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ripgrep
+        run: sudo apt-get install -y ripgrep
+      - name: shellcheck the filter and its test
+        run: shellcheck -x -S warning validation/test-module-lines.sh validation/test-test-module-lines.sh
+      - name: test-module filter and validate.sh scans
+        run: bash validation/test-test-module-lines.sh
+
   # release-crate.yml and notify-release.yml are called at @main by every satellite's
   # release, so a broken expression or script here breaks thirteen releases at once.
   # actionlint checks the workflow syntax, the expressions and, through shellcheck,

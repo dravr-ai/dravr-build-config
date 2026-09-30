@@ -44,6 +44,18 @@ warn_validation() {
     echo -e "${YELLOW}⚠️  $1${NC}"
 }
 
+# Matches in production code only: `path:line:content` for every match of $1
+# under the remaining arguments (rg paths and flags), minus the lines inside a
+# file's trailing `#[cfg(test)] mod tests { ... }`. A unit test's unwrap, expect,
+# panic!, mock or `let _x` is test code, exactly as it is under tests/.
+# test-module-lines.sh documents the layout it assumes; the "Test module layout"
+# check below reports any file it would misread.
+TEST_MODULE_LINES="$SCRIPT_DIR/test-module-lines.sh"
+prod_src_matches() {
+    local pattern="$1"; shift
+    { rg -n --with-filename "$pattern" "$@" 2>/dev/null < /dev/null || true; } | "$TEST_MODULE_LINES"
+}
+
 # Determine scan paths
 SRC_PATHS=""
 TEST_PATHS=""
@@ -124,9 +136,11 @@ fi
 echo -e "${BLUE}Checking for problematic error handling...${NC}"
 # --no-filename so the comment filter sees the source line itself: a `///` doc
 # comment explaining that `Row::get` is `try_get().unwrap()` is prose, not a call.
-UNWRAPS=$(rg --no-filename "\.unwrap\(\)" $SRC_PATHS 2>/dev/null < /dev/null | rg -v "^\s*//" | rg -v "// Safe|hardcoded.*valid|static.*data" | wc -l | tr -d ' ')
-EXPECTS=$(rg --no-filename "\.expect\(" $SRC_PATHS 2>/dev/null < /dev/null | rg -v "^\s*//" | rg -v "// Safe" | wc -l | tr -d ' ')
-PANICS=$(rg "panic!\(" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+# The filenames are cut back off after the test-module filter so the comment
+# filter sees the source line itself, as it did with --no-filename.
+UNWRAPS=$(prod_src_matches "\.unwrap\(\)" $SRC_PATHS | cut -d: -f3- | rg -v "^\s*//" | rg -v "// Safe|hardcoded.*valid|static.*data" | wc -l | tr -d ' ')
+EXPECTS=$(prod_src_matches "\.expect\(" $SRC_PATHS | cut -d: -f3- | rg -v "^\s*//" | rg -v "// Safe" | wc -l | tr -d ' ')
+PANICS=$(prod_src_matches "panic!\(" $SRC_PATHS | wc -l | tr -d ' ')
 if [ "${UNWRAPS:-0}" -gt 0 ]; then
     fail_validation "Found $UNWRAPS problematic .unwrap() calls"
 fi
@@ -164,7 +178,7 @@ fi
 # Production mocks
 # ============================================================================
 echo -e "${BLUE}Checking for production mock code...${NC}"
-MOCKS=$(rg "mock_|get_mock|return.*mock|demo purposes|stub implementation|mock implementation" $SRC_PATHS -g "!*/bin/*" -g "!*/tests/*" 2>/dev/null | rg -v "// |/// |//!" | wc -l | tr -d ' ')
+MOCKS=$(prod_src_matches "mock_|get_mock|return.*mock|demo purposes|stub implementation|mock implementation" $SRC_PATHS -g "!*/bin/*" -g "!*/tests/*" | rg -v "// |/// |//!" | wc -l | tr -d ' ')
 if [ "${MOCKS:-0}" -gt 0 ]; then
     fail_validation "Found $MOCKS mock/stub patterns in production code"
 else
@@ -178,7 +192,7 @@ echo -e "${BLUE}Checking for underscore-prefixed names...${NC}"
 # A `let _guard = lock.lock().await;` binding is the one underscore name that must
 # stay: it holds an RAII guard to the end of scope, and "removing the variable"
 # as `let _ = ...` drops the guard, and releases the lock, on the same line.
-UNDERSCORE_HITS=$(rg "fn _[a-zA-Z]|let _[a-zA-Z]|struct _[a-zA-Z]|enum _[a-zA-Z]" $SRC_PATHS -g "!*/bin/*" -n 2>/dev/null < /dev/null | rg -v "let (mut )?_[a-z_]*guard\\b" || true)
+UNDERSCORE_HITS=$(prod_src_matches "fn _[a-zA-Z]|let _[a-zA-Z]|struct _[a-zA-Z]|enum _[a-zA-Z]" $SRC_PATHS -g "!*/bin/*" | rg -v "let (mut )?_[a-z_]*guard\\b" || true)
 UNDERSCORES=$(printf '%s' "$UNDERSCORE_HITS" | grep -c . || true)
 UNDERSCORES=${UNDERSCORES:-0}
 if [ "$UNDERSCORES" -gt 0 ]; then
@@ -261,10 +275,38 @@ if [ "$CFG_TEST" -gt 0 ]; then
     if [ "${ENFORCE_NO_CFG_TEST:-0}" -gt 0 ]; then
         fail_validation "Found $CFG_TEST #[cfg(test)] in src/ — tests go in external tests/ directory"
     else
-        warn_validation "Found $CFG_TEST #[cfg(test)] in src/ — consider external tests/ for integration tests"
+        warn_validation "Found $CFG_TEST #[cfg(test)] in src/ (unit tests; the src/ scans above skip a trailing test module)"
     fi
 else
     pass_validation "No inline test modules"
+fi
+
+# ============================================================================
+# Test module layout (warning by default, error if local config enforces it)
+# ============================================================================
+# The unwrap/expect/panic/mock/underscore scans skip a file's trailing
+# `#[cfg(test)] mod tests { ... }`. A layout that filter would misread — an item
+# after the test module, a test-only fn outside one — could hide production
+# code from those scans, so it is reported here. A repo fails on it by setting
+# `enforce_layout = true` under [test_modules] in validation-patterns.local.toml.
+echo -e "${BLUE}Checking test module layout...${NC}"
+if [ -n "$SRC_PATHS" ]; then
+    # shellcheck disable=SC2086
+    LAYOUT_ERRORS=$("$TEST_MODULE_LINES" --check $SRC_PATHS 2>&1 < /dev/null || true)
+else
+    LAYOUT_ERRORS=""
+fi
+LAYOUT_COUNT=$(printf '%s\n' "$LAYOUT_ERRORS" | grep -c . || true)
+ENFORCE_LAYOUT=$(grep -E "^[[:space:]]*enforce_layout[[:space:]]*=[[:space:]]*true" "$LOCAL_PATTERNS_FILE" 2>/dev/null | wc -l | tr -d ' ')
+if [ "${LAYOUT_COUNT:-0}" -gt 0 ]; then
+    if [ "${ENFORCE_LAYOUT:-0}" -gt 0 ]; then
+        fail_validation "Found $LAYOUT_COUNT test module layout problem(s) — the test module must be a trailing inline mod"
+    else
+        warn_validation "Found $LAYOUT_COUNT test module layout problem(s) — the src/ scans may misread these files"
+    fi
+    printf '%s\n' "$LAYOUT_ERRORS" | head -5
+else
+    pass_validation "Test modules are trailing inline modules"
 fi
 
 # ============================================================================
