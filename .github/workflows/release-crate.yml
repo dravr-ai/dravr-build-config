@@ -67,6 +67,11 @@ on:
         required: false
         type: boolean
         default: false
+      draft:
+        description: "Create the GitHub release as a draft, for a caller that attaches binaries and then publishes it; a repo with immutable releases cannot add assets to a published one"
+        required: false
+        type: boolean
+        default: false
     secrets:
       CARGO_REGISTRY_TOKEN:
         description: "crates.io token; required when publish is set"
@@ -423,6 +428,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.bump.outputs.version }}
           NOTES: ${{ needs.bump.outputs.notes }}
+          DRAFT_RELEASE: ${{ inputs.draft }}
         run: |
           set -euo pipefail
           if gh release view "v${VERSION}" >/dev/null 2>&1; then
@@ -430,5 +436,11 @@ jobs:
             exit 0
           fi
           printf '%s\n' "${NOTES:-No changes recorded.}" > "${RUNNER_TEMP}/notes.md"
+          # A draft stays editable until its caller publishes it, so binaries
+          # can still be attached on a repo with immutable releases.
+          DRAFT=()
+          if [ "${DRAFT_RELEASE}" = "true" ]; then
+            DRAFT=(--draft)
+          fi
           gh release create "v${VERSION}" --verify-tag --title "v${VERSION}" \
-            --notes-file "${RUNNER_TEMP}/notes.md"
+            --notes-file "${RUNNER_TEMP}/notes.md" "${DRAFT[@]}"
