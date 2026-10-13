@@ -89,7 +89,8 @@ It refuses, with the reason printed:
   so a peer's `git add` would reach `origin/main` under your message;
 - when the worktree it would remove is not the one git has the branch checked out in
   (`feature/a-b` and `feature-a/b` share one directory name), or holds changes no commit
-  has — `git worktree remove --force` would destroy them. It checks before the squash
+  has, or carries a git-ignored `.savoir/` clone with edits or commits no remote has —
+  `git worktree remove --force` would destroy them. It checks before the squash
   and again before the removal; the second time it stops with exit 3, the work already on
   `origin/main`, and prints the rerun;
 - when local `main` cannot fast-forward to `origin/main`, or carries commits `origin/main`

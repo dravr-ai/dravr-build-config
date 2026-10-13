@@ -190,6 +190,25 @@ cleanup_blocker() {
         printf '%s\n' "$loose" | sed 's/^/   /'
         echo "Commit them on another branch, stash them, or discard them."
     fi
+    # .savoir/, the private agent knowledge, is git-ignored, so the status above
+    # never lists it, and create-worktree.sh clones it into every tree: an edit
+    # made there, or a commit not yet pushed, exists nowhere else. A clone git
+    # cannot read is a blocker too, since nothing then says it holds no work.
+    if [[ -d "$tree/.savoir/.git" ]]; then
+        if ! loose="$(git -C "$tree/.savoir" status --porcelain 2>&1)"; then
+            echo "its .savoir/ clone cannot be read (${loose##*$'\n'}), so it may hold unpushed work."
+        elif [[ -n "$loose" ]]; then
+            echo "its .savoir/ clone holds changes no commit has:"
+            printf '%s\n' "$loose" | sed 's/^/   /'
+            echo "Commit and push them from $WORKTREE_PATH/.savoir, or discard them."
+        elif ! loose="$(git -C "$tree/.savoir" log --oneline --branches --not --remotes 2>&1)"; then
+            echo "its .savoir/ clone cannot be read (${loose##*$'\n'}), so it may hold unpushed work."
+        elif [[ -n "$loose" ]]; then
+            echo "its .savoir/ clone holds commits no remote has:"
+            printf '%s\n' "$loose" | sed 's/^/   /'
+            echo "Push them from $WORKTREE_PATH/.savoir first."
+        fi
+    fi
 }
 
 BLOCKER="$(cleanup_blocker)"

@@ -350,6 +350,32 @@ holds "the draft is still there" test -f "$ALPHA/draft.txt"
 rm -f "$ALPHA/draft.txt"
 must git -C "$ALPHA" checkout -q -- alpha.txt
 
+# .savoir/ is git-ignored, so the worktree's own status never shows it, yet
+# create-worktree.sh clones the private knowledge there and work committed in it
+# exists nowhere else until it is pushed.
+SAV_ORIGIN="$TMP/savoir-origin.git"
+must git init -q --bare "$SAV_ORIGIN"
+must git clone -q "$SAV_ORIGIN" "$TMP/savoir-seed"
+echo "rule one" > "$TMP/savoir-seed/AGENTS.md"
+must git -C "$TMP/savoir-seed" add -A
+must git -C "$TMP/savoir-seed" commit -qm "rules: one"
+must git -C "$TMP/savoir-seed" push -q origin main
+must git clone -q "$SAV_ORIGIN" "$ALPHA/.savoir"
+printf '.savoir/\n' >> "$APP/.git/info/exclude"
+echo "a private rule" >> "$ALPHA/.savoir/AGENTS.md"
+must git -C "$ALPHA/.savoir" commit -qam "rules: not pushed"
+run "$APP" "$MERGE" -m "feat: land alpha"
+check "refuses when the tree's .savoir/ clone holds commits no remote has" 1
+says "and names them" "rules: not pushed"
+is "origin/main did not move" "$ORIGIN_MAIN" "$(remote_sha main)"
+holds "the clone is still there" test -d "$ALPHA/.savoir/.git"
+must git -C "$ALPHA/.savoir" push -q origin main
+echo "an edit" >> "$ALPHA/.savoir/AGENTS.md"
+run "$APP" "$MERGE" -m "feat: land alpha"
+check "refuses uncommitted edits in the tree's .savoir/ clone" 1
+says "and lists them" " M AGENTS.md"
+rm -rf "$ALPHA/.savoir"
+
 echo local > "$APP/local.txt"
 must git -C "$APP" add local.txt
 must git -C "$APP" commit -qm "chore: local only"

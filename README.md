@@ -281,8 +281,9 @@ only cleans up. A squash that moves `.build` is validated on the new `.build`
 (`git submodule update` before the gate), and a worktree carrying the submodule is
 `deinit`ed before `git worktree remove --force`. Because that removal destroys whatever the
 tree holds, it only removes the tree git has the branch checked out in (`feature/a-b` and
-`feature-a/b` share a directory name) and only when the tree holds nothing a commit lacks —
-checked before the squash, and again before the removal, where it stops with exit 3.
+`feature-a/b` share a directory name) and only when the tree holds nothing a commit lacks,
+its git-ignored `.savoir/` clone included (edits, or commits no remote has) — checked before
+the squash, and again before the removal, where it stops with exit 3.
 
 `skills/test-worktree-skills.sh` builds a throwaway `.build` from this checkout, a consumer
 with a bare origin and a stub gate, and drives every path above through real hooks. It also
