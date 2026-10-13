@@ -232,8 +232,10 @@ runs as `.claude/skills/<skill>/…` or `.build/skills/<skill>/…`.
 A skill only belongs here when more than one repo uses it. A submodule needs a second update
 step to move, so a consumer can sit on the newest commit and still resolve the skill through a
 stale `.build` — the symlink dangles and the skill silently stops existing. `carnet` was moved
-out to `dravr-platform/.agents/skills/carnet/` on 2026-09-02 for exactly that reason: it was
-only ever used by that one repo, so the submodule bought nothing and cost that failure.
+out of here on 2026-09-02 for exactly that reason: it was only ever used by dravr-platform, so
+the submodule bought nothing and cost that failure. Since carnet#890 it lives with the rest of
+platform's agent knowledge in the private dravr-savoir, reached as `.claude/skills/carnet/`,
+and `savoir.sh` takes the second step at every session start and loudly when it cannot.
 
 | Skill | Purpose |
 |---|---|
