@@ -30,12 +30,14 @@ jobs:
       # stops firing here stops firing in all of them.
       - name: shellcheck the shared skills and the bootstrap
         run: |
-          shellcheck -x -S warning ci/bootstrap-repo.sh skills/lib/worktree.sh \
+          shellcheck -x -S warning ci/bootstrap-repo.sh ci/savoir.sh ci/savoir.test.sh skills/lib/worktree.sh \
             skills/create-worktree/create-worktree.sh skills/finish-worktree/finish-worktree.sh \
             skills/finish-worktree/merge-and-cleanup.sh skills/finish-worktree/prune-stale-branches.sh \
             skills/test-worktree-skills.sh
       - name: worktree skills (create, finish, merge-and-cleanup, prune)
         run: bash skills/test-worktree-skills.sh
+      - name: private agent knowledge sync (savoir.sh, bootstrap, create-worktree)
+        run: bash ci/savoir.test.sh
 
   # Every satellite's pre-push gate is validation/satellite-pre-push-validate.sh, so a
   # tier that stops firing here stops firing in all of them. The test builds a

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
 # ABOUTME: Self-healing bootstrap every dravr-* repo runs at Claude Code session start
-# ABOUTME: Teaches git to auto-sync .build, repairs a stale submodule, links shared skills
+# ABOUTME: Teaches git to auto-sync .build, repairs a stale submodule, syncs .savoir, links shared skills
 #
 # Why this exists: git does NOT update a submodule when you pull the superproject
 # unless submodule.recurse is set. So a pull that advances the .build gitlink leaves
@@ -123,6 +123,22 @@ EOF
 fi
 
 # ============================================================================
+# 2b. Private agent knowledge (.savoir/), for the repos that opted in
+# ============================================================================
+# A repo whose .gitignore lists .savoir/ keeps its rules, skills and subagents in
+# the private dravr-savoir, cloned there. Synced before the skills step below,
+# because that step reads .claude/skills, which in those repos points into it.
+SAVOIR_OUT=""
+if [ -f "$REPO_ROOT/.build/ci/savoir.sh" ]; then
+    SAVOIR_OUT=$(bash "$REPO_ROOT/.build/ci/savoir.sh" sync 2>&1)
+    case "$SAVOIR_OUT" in
+        *"AGENT KNOWLEDGE ABSENT"*) warned "${SAVOIR_OUT//$'\n'/$'\n'   }" ;;
+        *"cloned"*) fixed "${SAVOIR_OUT}" ;;
+        "⚠️"* | "✏️"*) warned "${SAVOIR_OUT}" ;;
+    esac
+fi
+
+# ============================================================================
 # 3. Hook integrity
 # ============================================================================
 # core.hooksPath is the RELATIVE path .build/hooks, which git resolves against
@@ -149,7 +165,16 @@ fi
 # skill (skills/lib holds the shell library the worktree skills source through
 # their own resolved path), so it is never linked.
 SKILL_DIR="$REPO_ROOT/.claude/skills"
-if [ -n "$(ls -A "$REPO_ROOT/.build/skills" 2>/dev/null)" ]; then
+if [ -L "$SKILL_DIR" ] && [ ! -e "$SKILL_DIR" ]; then
+    # A repo that keeps its skills in .savoir/ links the whole directory there; with
+    # the clone absent there is nothing to link into, and 2b already said why.
+    warned ".claude/skills -> $(readlink "$SKILL_DIR") resolves to nothing — no skills this session"
+elif [ -L "$SKILL_DIR" ]; then
+    # Delegated to the .savoir/ clone, which tracks its own links to these shared
+    # skills: a link written through this one would land inside that clone, dirty
+    # it, and stop every later refresh.
+    :
+elif [ -n "$(ls -A "$REPO_ROOT/.build/skills" 2>/dev/null)" ]; then
     # A repo consuming .build is a Claude Code repo, so when it has no skills
     # directory yet the shared skills are precisely what should create it.
     # Requiring the directory to pre-exist would silently withhold every shared
@@ -191,5 +216,7 @@ fi
 if [ -z "$WARNED" ] && [ -z "$FIXED" ]; then
     echo "✅ .build in sync, hooks armed, skills resolve"
 fi
+# The version of the private knowledge this session reads, when the repo uses it.
+case "$SAVOIR_OUT" in "✅ private agent knowledge: "*) echo "$SAVOIR_OUT" ;; esac
 
 exit 0

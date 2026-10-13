@@ -27,7 +27,7 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
   (the unit-test filter its scans share, see Extending), and
   `satellite-pre-push-validate.sh`, the pre-push gate every satellite runs (see below)
 - `hooks/` — Git hooks (pre-commit, commit-msg, pre-push); `ai-attribution.sh` holds the rules the last two share
-- `ci/` — Reusable CI helpers, plus `bootstrap-repo.sh` (see below)
+- `ci/` — Reusable CI helpers, plus `bootstrap-repo.sh` and `savoir.sh` (see below)
 - `.github/workflows/` — reusable workflows every satellite calls: `release-crate.yml` and
   `notify-release.yml` (see below)
 - `docs/AGENTS_DISCIPLINE.md` — Shared architectural discipline rules for AI agents
@@ -35,6 +35,21 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
   `bootstrap-repo.sh`; `skills/lib/` is the shell library the worktree skills source (see below)
 - `vendor/llm-registre/` — submodule: the [llm-registre](https://github.com/dravr-ai/llm-registre)
   limitation-register gates, run by `validate.sh`
+
+## Private agent knowledge (`ci/savoir.sh`)
+
+A repo whose `.gitignore` lists `.savoir/` keeps its rules, skills and subagent definitions in
+the private `dravr-ai/dravr-savoir`, cloned at `.savoir/`. Its `CLAUDE.md` imports
+`.savoir/<repo>/AGENTS.md`, and `.claude/skills`, `.claude/agents` and `.claude/rules` are
+symlinks into `.savoir/<repo>/`. It is a real clone, not a sibling: Claude Code silently drops
+a `CLAUDE.md` import that leads outside the working directory.
+
+`savoir.sh sync` clones `.savoir/` or fast-forwards it — never over local edits — and says
+`AGENT KNOWLEDGE ABSENT` when it cannot; a cloud session's attached `../dravr-savoir` is the
+fallback source. `bootstrap-repo.sh` runs it at session start and `create-worktree.sh` runs it
+for a new worktree, which matters because imports are read before any SessionStart hook: a
+clone made by the first session's hook only serves the second. A repo that has not opted in
+gets no output and no clone.
 
 ## Keeping `.build` in sync (`ci/bootstrap-repo.sh`)
 

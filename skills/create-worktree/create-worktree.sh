@@ -71,6 +71,14 @@ if [[ ! -x "$WORKTREE_PATH/.build/hooks/commit-msg" ]]; then
     exit 1
 fi
 
+# A repo that keeps its agent knowledge in the private dravr-savoir (its .gitignore
+# lists .savoir/) gets the clone now: Claude Code reads CLAUDE.md imports before any
+# SessionStart hook runs, so a clone made by the first session's hook would only serve
+# the second. A repo that has not opted in gets no output and no clone.
+if [[ -f "$WORKTREE_PATH/.build/ci/savoir.sh" ]]; then
+    (cd "$WORKTREE_PATH" && bash .build/ci/savoir.sh sync)
+fi
+
 # Stamp the worktree as this session's, so the status line (and, in
 # dravr-platform, bin/worktrees.sh) can say whose tree it is. The stamp sits in
 # the worktree's git-dir, never in the working tree.
