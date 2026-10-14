@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
 # ABOUTME: Universal architectural validation for all dravr-* Rust projects
-# ABOUTME: Reads patterns.toml baseline + optional local overrides
+# ABOUTME: The dravr-wide rules are written here; validation-patterns.local.toml holds a repo's own switches
 
 set -e
 
@@ -14,7 +14,6 @@ NC='\033[0m'
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-PATTERNS_FILE="$SCRIPT_DIR/patterns.toml"
 LOCAL_PATTERNS_FILE="$PROJECT_ROOT/validation-patterns.local.toml"
 
 VALIDATION_FAILED=false
@@ -82,12 +81,6 @@ echo "Sources: $SRC_PATHS"
 
 cd "$PROJECT_ROOT"
 
-# Parse patterns from TOML (simple grep-based, no Python dependency)
-get_pattern() {
-    local key="$1"
-    grep "^${key} = " "$PATTERNS_FILE" 2>/dev/null | sed 's/.*= "//' | sed 's/"$//' || echo ""
-}
-
 # ============================================================================
 # FAST-FAIL: Backup files
 # ============================================================================
@@ -105,7 +98,12 @@ fi
 # Placeholder detection
 # ============================================================================
 echo -e "${BLUE}Checking for placeholder implementations...${NC}"
-PLACEHOLDER_PATTERNS="stub implementation|stub for now|mock implementation|placeholder implementation|will be implemented|to be implemented|not yet implemented|In future versions|Implement the code|return mock data"
+# Every rule lives in this file (carnet#942): a separate patterns file that nothing read
+# had drifted from these lists. The phrases are matched case-insensitively, except the
+# two sentence openings that ordinary prose writes in lower case ("a second
+# implementation would mean…", "callers should implement the trait"). A bare
+# PLACEHOLDER is not a rule: it is how prompt templates name their {{PLACEHOLDER}} tokens.
+PLACEHOLDER_PATTERNS="stub implementation|stub for now|stub endpoint|mock implementation|placeholder implementation|placeholder structure|simplified placeholder|this is a placeholder|is a placeholder that|dummy implementation|will be implemented|to be implemented|not yet implemented|In future versions|Implement the code|return mock data|TODO: Implementation|available for real implementation|Would implement|Will implement|(?-i:Implementation would)|(?-i:Should implement)"
 # Exclude comments (/// and //) to avoid matching documentation that describes placeholders
 PLACEHOLDERS=$(rg -i "$PLACEHOLDER_PATTERNS" $SRC_PATHS 2>/dev/null | rg -v "^\s*///|^\s*//" | wc -l | tr -d ' ')
 PLACEHOLDERS=${PLACEHOLDERS:-0}
@@ -122,10 +120,12 @@ fi
 echo -e "${BLUE}Checking for forbidden anyhow usage...${NC}"
 ANYHOW_MACRO=$(rg "\\banyhow!\\(|anyhow::anyhow!\\(" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
 ANYHOW_IMPORTS=$(rg "use anyhow::" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
-ANYHOW_TOTAL=$((ANYHOW_MACRO + ANYHOW_IMPORTS))
+# A fully qualified `-> anyhow::Result<()>` needs no `use` line, so it is counted on its own.
+ANYHOW_TYPES=$(rg "anyhow::(Result|Error)\\b" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+ANYHOW_TOTAL=$((ANYHOW_MACRO + ANYHOW_IMPORTS + ANYHOW_TYPES))
 if [ "$ANYHOW_TOTAL" -gt 0 ]; then
     fail_validation "Found $ANYHOW_TOTAL anyhow usages (use structured error types)"
-    rg "\\banyhow!\\(|use anyhow::" $SRC_PATHS -n 2>/dev/null | head -5
+    rg "\\banyhow!\\(|use anyhow::|anyhow::(Result|Error)\\b" $SRC_PATHS -n 2>/dev/null | head -5
 else
     pass_validation "No anyhow usage"
 fi
@@ -178,7 +178,7 @@ fi
 # Production mocks
 # ============================================================================
 echo -e "${BLUE}Checking for production mock code...${NC}"
-MOCKS=$(prod_src_matches "mock_|get_mock|return.*mock|demo purposes|stub implementation|mock implementation" $SRC_PATHS -g "!*/bin/*" -g "!*/tests/*" | rg -v "// |/// |//!" | wc -l | tr -d ' ')
+MOCKS=$(prod_src_matches "mock_|get_mock|return.*mock|demo purposes|for demo|stub implementation|mock implementation" $SRC_PATHS -g "!*/bin/*" -g "!*/tests/*" | rg -v "// |/// |//!" | wc -l | tr -d ' ')
 if [ "${MOCKS:-0}" -gt 0 ]; then
     fail_validation "Found $MOCKS mock/stub patterns in production code"
 else
@@ -415,6 +415,14 @@ if [ -n "$FRONTEND_PATHS" ]; then
         fail_validation "Found $JS_SKIPS skipped JS/TS tests"
     else
         pass_validation "No skipped JS/TS tests"
+    fi
+    # A test body that announces a harness instead of asserting anything.
+    JS_PLACEHOLDER_TESTS=$(rg "In a full E2E test, we would|testing infrastructure ready|testing ready|validation infrastructure ready" $FRONTEND_PATHS -g "*.test.*" -g "*.spec.*" --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+    if [ "${JS_PLACEHOLDER_TESTS:-0}" -gt 0 ]; then
+        fail_validation "Found $JS_PLACEHOLDER_TESTS placeholder JS/TS test bodies"
+        rg -n "In a full E2E test, we would|testing infrastructure ready|testing ready|validation infrastructure ready" $FRONTEND_PATHS -g "*.test.*" -g "*.spec.*" 2>/dev/null | head -5
+    else
+        pass_validation "No placeholder JS/TS test bodies"
     fi
 fi
 

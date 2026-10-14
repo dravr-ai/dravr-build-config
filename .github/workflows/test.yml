@@ -69,10 +69,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install ripgrep
         run: sudo apt-get install -y ripgrep
-      - name: shellcheck the filter and its test
-        run: shellcheck -x -S warning validation/test-module-lines.sh validation/test-test-module-lines.sh
+      - name: shellcheck the filter and the tests
+        run: shellcheck -x -S warning validation/test-module-lines.sh validation/test-test-module-lines.sh validation/test-validate.sh
       - name: test-module filter and validate.sh scans
         run: bash validation/test-test-module-lines.sh
+      - name: validate.sh's own rules
+        run: bash validation/test-validate.sh
 
   # release-crate.yml and notify-release.yml are called at @main by every satellite's
   # release, so a broken expression or script here breaks thirteen releases at once.

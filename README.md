@@ -23,7 +23,7 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
 ## Structure
 
 - `cargo/` — Canonical Cargo lint config, clippy.toml, rustfmt.toml, deny.toml
-- `validation/` — Architectural validation script + pattern definitions, `test-module-lines.sh`
+- `validation/` — Architectural validation script (`validate.sh`, which holds the rules themselves), `test-module-lines.sh`
   (the unit-test filter its scans share, see Extending), and
   `satellite-pre-push-validate.sh`, the pre-push gate every satellite runs (see below)
 - `hooks/` — Git hooks (pre-commit, commit-msg, pre-push); `ai-attribution.sh` holds the rules the last two share
