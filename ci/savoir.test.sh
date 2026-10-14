@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
 # ABOUTME: Tests savoir.sh, and the bootstrap and create-worktree paths that call it, against local repos
-# ABOUTME: Opt-in, clone, fast-forward, local edits, a failed clone, the attached-sibling fallback, the lock; no network
+# ABOUTME: Opt-in, clone, fast-forward, local edits, a failed clone, the attached-sibling fallback and its origin, the lock; no network
 
 set -u
 
@@ -143,10 +143,41 @@ fails "no partial clone is left" test -e "$APP/.savoir"
 
 # ---- the attached sibling of a cloud session is the fallback
 must git clone -q "$SAV" "$WS/dravr-savoir"
+# A personal checkout beside the repo may sit on a feature branch: the clone takes main.
+must git -C "$WS/dravr-savoir" checkout -q -b feature/wip
+printf -- '- unreviewed rule\n' >> "$WS/dravr-savoir/widget/AGENTS.md"
+must git -C "$WS/dravr-savoir" commit -qam "wip"
 run "$APP" env SAVOIR_URL="$TMP/nowhere" bash "$SAVOIR" sync
 says "a failed clone falls back to ../dravr-savoir" "cloned from the attached ../dravr-savoir"
 holds "the rules come from the sibling" test -f "$APP/.savoir/widget/AGENTS.md"
-rm -rf "$WS/dravr-savoir"
+# carnet#952: origin stays the real repository, the sibling is only a fallback remote.
+[ "$(git -C "$APP/.savoir" remote get-url origin)" = "$TMP/nowhere" ] && ok "origin is SAVOIR_URL, not the sibling" \
+    || bad "origin is $(git -C "$APP/.savoir" remote get-url origin)"
+[ "$(git -C "$APP/.savoir" remote get-url sibling)" = "$WS/widget/../dravr-savoir" ] && ok "the sibling is the remote 'sibling'" \
+    || bad "remote sibling is '$(git -C "$APP/.savoir" remote get-url sibling 2>&1)'"
+[ "$(git -C "$APP/.savoir" symbolic-ref --short HEAD)" = main ] && ok "the clone is on main, not the sibling's branch" \
+    || bad "the clone is on $(git -C "$APP/.savoir" symbolic-ref --short HEAD)"
+fails "and has none of that branch's work" grep -q "unreviewed rule" "$APP/.savoir/widget/AGENTS.md"
+[ "$(git -C "$APP/.savoir" config branch.main.remote)" = origin ] && ok "main pushes to origin" \
+    || bad "main's remote is '$(git -C "$APP/.savoir" config branch.main.remote)'"
+run "$APP" env SAVOIR_URL="$TMP/nowhere" bash "$SAVOIR" status
+says "status names an origin that is not dravr-savoir on GitHub" "origin $TMP/nowhere"
+# origin unreachable: the next sync fast-forwards main from the sibling, and says so.
+must git -C "$WS/dravr-savoir" checkout -q main
+printf -- '- rule four\n' >> "$WS/dravr-savoir/widget/AGENTS.md"
+must git -C "$WS/dravr-savoir" commit -qam "rules v4"
+must git -C "$WS/dravr-savoir" checkout -q feature/wip
+run "$APP" env SAVOIR_URL="$TMP/nowhere" bash "$SAVOIR" sync
+says "an unreachable origin falls back to the sibling's main, named" "fast-forwarded from the attached ../dravr-savoir (sibling/main)"
+holds "and brings its main" grep -q "rule four" "$APP/.savoir/widget/AGENTS.md"
+fails "never its branch" grep -q "unreviewed rule" "$APP/.savoir/widget/AGENTS.md"
+# A commit made in .savoir/ goes to origin, which refuses it here, never into the sibling.
+printf -- '- my rule\n' >> "$APP/.savoir/widget/AGENTS.md"
+must git -C "$APP/.savoir" commit -qam "my rule"
+fails "a push from .savoir/ does not land in the sibling" git -C "$APP/.savoir" push -q
+[ -z "$(git -C "$WS/dravr-savoir" log --all --format=%s --grep='my rule')" ] && ok "the sibling's history is untouched" \
+    || bad "the commit reached the sibling"
+rm -rf "$WS/dravr-savoir" "$APP/.savoir"
 
 # ---- something else at .savoir is not overwritten
 rm -rf "$APP/.savoir"; mkdir "$APP/.savoir"; echo mine > "$APP/.savoir/notes"

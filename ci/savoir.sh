@@ -23,7 +23,12 @@
 # SAVOIR_LOCK_WAIT (default 30) is how many seconds a sync waits on another session's.
 # SAVOIR_URL overrides the clone source (default https://github.com/dravr-ai/dravr-savoir.git).
 # When that clone fails and a sibling ../dravr-savoir exists — a cloud session with the
-# repository attached — the clone is made from the sibling instead.
+# repository attached — the clone is made from the sibling's main instead, and then pointed
+# back at SAVOIR_URL (carnet#952): `origin` stays the real repository, so a push from
+# .savoir/ goes to dravr-savoir or fails loudly, never into the sibling, and bilan's
+# unpushed count measures against it. The sibling is kept as a remote named `sibling`, the
+# fallback a later sync fast-forwards from — main only, never a branch it happens to be on —
+# when origin cannot be reached, and says so.
 #
 # It never exits non-zero: a session-start hook that fails tells the developer nothing, so
 # problems are printed. A repo that has not opted in gets no output at all.
@@ -41,10 +46,20 @@ absent() {
     echo "⚠️  AGENT KNOWLEDGE ABSENT — $1"
     echo "   This repo's private rules, skills and subagents are missing from this session."
     echo "   Local: git clone git@github.com:dravr-ai/dravr-savoir.git .savoir"
-    echo "   Cloud: attach dravr-ai/dravr-savoir to the session, then: git clone ../dravr-savoir .savoir"
+    echo "   Cloud: attach dravr-ai/dravr-savoir to the session, then: bash .build/ci/savoir.sh sync"
 }
 
 head_of() { git -C "$DEST" log -1 --format='%h %cs' 2>/dev/null; }
+
+# ", origin <url>" when .savoir/ does not point at the dravr-savoir repository on GitHub.
+origin_note() {
+    local origin
+    origin=$(git -C "$DEST" remote get-url origin 2>/dev/null) || origin="(none)"
+    case "$origin" in
+        *github.com[:/]dravr-ai/dravr-savoir | *github.com[:/]dravr-ai/dravr-savoir.git) ;;
+        *) printf ', origin %s' "$origin" ;;
+    esac
+}
 
 # Several sessions start in one checkout at once; two clones into one directory corrupt
 # each other. The lock lives in this worktree's git-dir, so each worktree has its own.
@@ -68,9 +83,9 @@ cmd_status() {
     if [ ! -d "$DEST/.git" ]; then
         absent ".savoir/ is not cloned."
     elif [ -n "$(git -C "$DEST" status --porcelain 2>/dev/null)" ]; then
-        echo "✏️  private agent knowledge: .savoir @ $(head_of), with local edits"
+        echo "✏️  private agent knowledge: .savoir @ $(head_of)$(origin_note), with local edits"
     else
-        echo "✅ private agent knowledge: .savoir @ $(head_of)"
+        echo "✅ private agent knowledge: .savoir @ $(head_of)$(origin_note)"
     fi
 }
 
@@ -88,8 +103,19 @@ cmd_sync() {
         local err sibling="$REPO_ROOT/../dravr-savoir"
         if err=$(git clone --quiet "$URL" "$DEST" 2>&1); then
             echo "✅ private agent knowledge cloned: .savoir @ $(head_of)"
-        elif [ -d "$sibling/.git" ] && git clone --quiet "$sibling" "$DEST" 2>/dev/null; then
-            echo "✅ private agent knowledge cloned from the attached ../dravr-savoir: .savoir @ $(head_of)"
+        elif [ -d "$sibling/.git" ] && git clone --quiet --branch main "$sibling" "$DEST" 2>/dev/null; then
+            # main tracks origin/main by configuration even before origin has been
+            # fetched once, so `git push` from .savoir/ targets dravr-savoir.
+            if git -C "$DEST" remote rename origin sibling 2>/dev/null &&
+               git -C "$DEST" remote add origin "$URL" 2>/dev/null &&
+               git -C "$DEST" config branch.main.remote origin &&
+               git -C "$DEST" config branch.main.merge refs/heads/main; then
+                echo "✅ private agent knowledge cloned from the attached ../dravr-savoir (main): .savoir @ $(head_of)"
+                echo "   origin is $URL; ../dravr-savoir stays as the remote 'sibling', the fallback when origin cannot be reached"
+            else
+                rm -rf "$DEST"
+                absent "cloned from ../dravr-savoir but could not point origin back at $URL"
+            fi
         else
             rm -rf "$DEST"
             absent "clone failed: $(printf '%s' "$err" | tail -1)"
@@ -102,11 +128,16 @@ cmd_sync() {
         echo "✏️  .savoir @ $(head_of) has local edits — not refreshed."
         return 0
     fi
-    local err
+    local err branch
+    branch=$(git -C "$DEST" symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
     if err=$(git -C "$DEST" pull --ff-only --quiet 2>&1); then
-        echo "✅ private agent knowledge: .savoir @ $(head_of)"
+        echo "✅ private agent knowledge: .savoir @ $(head_of)$(origin_note)"
+    elif [ "$branch" = main ] && git -C "$DEST" remote get-url sibling >/dev/null 2>&1 &&
+         git -C "$DEST" fetch --quiet sibling main 2>/dev/null &&
+         git -C "$DEST" merge --ff-only --quiet sibling/main 2>/dev/null; then
+        echo "⚠️  origin could not be reached ($(printf '%s' "$err" | tail -1)); .savoir fast-forwarded from the attached ../dravr-savoir (sibling/main) @ $(head_of)"
     else
-        echo "⚠️  .savoir not refreshed ($(printf '%s' "$err" | tail -1)); using .savoir @ $(head_of)."
+        echo "⚠️  .savoir not refreshed ($(printf '%s' "$err" | tail -1)); using .savoir @ $(head_of)$(origin_note)."
     fi
 }
 

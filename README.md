@@ -46,7 +46,9 @@ a `CLAUDE.md` import that leads outside the working directory.
 
 `savoir.sh sync` clones `.savoir/` or fast-forwards it — never over local edits — and says
 `AGENT KNOWLEDGE ABSENT` when it cannot; a cloud session's attached `../dravr-savoir` is the
-fallback source. `bootstrap-repo.sh` runs it at session start and `create-worktree.sh` runs it
+fallback source, read from its `main` only and kept as the remote `sibling`, while `origin`
+stays dravr-savoir so a push from `.savoir/` never lands in the sibling; `status` names an
+origin that is not dravr-savoir on GitHub. `bootstrap-repo.sh` runs it at session start and `create-worktree.sh` runs it
 for a new worktree, which matters because imports are read before any SessionStart hook: a
 clone made by the first session's hook only serves the second. A repo that has not opted in
 gets no output and no clone.
