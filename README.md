@@ -16,8 +16,8 @@ ln -sf .build/cargo/rustfmt.toml rustfmt.toml
 # Run validation
 .build/validation/validate.sh
 
-# Append shared AI-agent discipline rules to your AGENTS.md
-cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
+# Import the shared AI-agent discipline rules: add this line to your CLAUDE.md
+#   @.build/docs/AGENTS_DISCIPLINE.md
 ```
 
 ## Structure
@@ -30,7 +30,8 @@ cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
 - `ci/` — Reusable CI helpers, plus `bootstrap-repo.sh` and `savoir.sh` (see below)
 - `.github/workflows/` — reusable workflows every satellite calls: `release-crate.yml` and
   `notify-release.yml` (see below)
-- `docs/AGENTS_DISCIPLINE.md` — Shared architectural discipline rules for AI agents
+- `docs/AGENTS_DISCIPLINE.md` — Shared architectural discipline rules for AI agents, imported
+  (`@.build/docs/AGENTS_DISCIPLINE.md`) by each repo's `CLAUDE.md`, never copied
 - `skills/` — Claude Code skills shared across repos, linked into your `.claude/skills/` by
   `bootstrap-repo.sh`; `skills/lib/` is the shell library the worktree skills source (see below)
 - `vendor/llm-registre/` — submodule: the [llm-registre](https://github.com/dravr-ai/llm-registre)

@@ -2,21 +2,23 @@
 SPDX-License-Identifier: MIT OR Apache-2.0
 Copyright (c) 2026 dravr.ai
 ABOUTME: Shared architectural discipline rules for all dravr-* repos
-ABOUTME: Append to each repo's AGENTS.md via `cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md`
+ABOUTME: Imported, never copied: each repo's CLAUDE.md carries `@.build/docs/AGENTS_DISCIPLINE.md`
 -->
 
 # Shared Architectural Discipline (canonical)
 
 This file is the **single source of truth** for session startup, architectural
-discipline, and pushback rules across all dravr-* repositories. Each repo's
-`AGENTS.md` should either reference or include this content.
+discipline, and pushback rules across all dravr-* repositories. A repo imports it, so a
+change here reaches every repo with its next `.build` bump; a copied block stops being
+the source the moment it is pasted. Its `CLAUDE.md` (or the `AGENTS.md` it links to)
+carries one line:
 
-To apply to a new repo:
-```bash
-cat .build/docs/AGENTS_DISCIPLINE.md >> AGENTS.md
-git add AGENTS.md
-git commit -m "docs: add shared architectural discipline from dravr-build-config"
 ```
+@.build/docs/AGENTS_DISCIPLINE.md
+```
+
+Claude Code reads an `@` import inside the working directory, and `.build/` is inside it.
+A repo that still carries a pasted copy replaces the copy with that line.
 
 ---
 
@@ -57,7 +59,7 @@ Before adding a new abstraction (registry, manager, factory, handler, schema mod
 ### No Orphan Migrations
 If you introduce a "v2" of something:
 - Migrate ALL callers in the same session, OR
-- Record remaining work in memory (`type: project`) with explicit list of what's left
+- Register what is left: a `LIMITATION(registre#<n>):` marker naming the unfinished item, backed by an issue in the private dravr-ai/dravr-carnet tracker (the `register-limitation` skill)
 - NEVER leave "for compat" code without a tracked deletion date
 
 ### When Adding, Remove
