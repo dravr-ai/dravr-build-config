@@ -334,8 +334,10 @@ Create `validation-patterns.local.toml` in your repo root to add project-specifi
 `#[cfg(test)] mod tests { ... }` through `validation/test-module-lines.sh`: a unit test's
 `unwrap` is test code, exactly as it is under `tests/`. The filter assumes the Rust convention
 (an inline test module, attached to a column-0 `#[cfg(test)]`, as the file's last item), and
-`validate.sh` reports every file that breaks it as a warning. A repo that wants a broken layout
-to fail sets, in `validation-patterns.local.toml`:
+`validate.sh` reports every file that breaks it as a warning and scans that file whole, test
+module included, so a layout the filter would misread can only add matches, never hide one. A
+filter or an rg that cannot run fails the validation rather than reading as a clean tree. A
+repo that wants a broken layout to fail sets, in `validation-patterns.local.toml`:
 
 ```toml
 [test_modules]

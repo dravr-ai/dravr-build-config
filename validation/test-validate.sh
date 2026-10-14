@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Fixture test for validate.sh's own rules — each scan fails the repo that breaks it and names the file
-# ABOUTME: Pins the anyhow and placeholder rules carried over from the deleted patterns.toml
+# ABOUTME: Pins the rules carried over from patterns.toml and that the src/ scans fail closed
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
@@ -22,11 +22,10 @@ fixture() {
   cat >"$WORK/$1/crates/demo/src/lib.rs"
   printf '%s\n' "$WORK/$1"
 }
-# validate_exit <root> [env…] — runs validate.sh there, output in $WORK/out
+# validate_exit <root> — runs $VALIDATE there, output in $WORK/out
 validate_exit() {
   local root=$1 code=0
-  shift
-  ( cd "$root" && env "$@" PROJECT_ROOT="$root" bash "$VALIDATE" >"$WORK/out" 2>&1 </dev/null ) || code=$?
+  ( cd "$root" && PROJECT_ROOT="$root" bash "$VALIDATE" >"$WORK/out" 2>&1 </dev/null ) || code=$?
   echo "$code"
 }
 plain() { sed 's/\x1b\[[0-9;]*m//g' "$WORK/out"; }
@@ -93,6 +92,51 @@ if [ "$(validate_exit "$repo")" = "0" ]; then
   pass "lower-case prose and a template PLACEHOLDER token pass"
 else
   fail "ordinary prose failed the placeholder rule: $(plain | grep -A3 'placeholder' || true)"
+fi
+
+# carnet#941: the src/ scans pipe rg through test-module-lines.sh. A filter that cannot
+# run read as a clean tree, so it now fails the validation. validate.sh finds the filter
+# beside itself, so a copy beside a filter that cannot execute is the broken install.
+mkdir -p "$WORK/broken-install"
+cp "$VALIDATE" "$WORK/broken-install/validate.sh"
+printf '#!/bin/sh\nexit 0\n' >"$WORK/broken-install/test-module-lines.sh"
+chmod -x "$WORK/broken-install/test-module-lines.sh"
+repo="$(fixture filter-broken <<'EOF'
+pub fn f(x: Option<u8>) -> u8 {
+    x.unwrap()
+}
+EOF
+)"
+if [ "$(VALIDATE="$WORK/broken-install/validate.sh" validate_exit "$repo")" = "1" ] && plain | grep -q 'test-module filter failed'; then
+  pass "a test-module filter that cannot run fails the validation"
+else
+  fail "a broken filter read as clean: $(plain | grep -E '❌|✅ No problematic|All architectural' || true)"
+fi
+if ! plain | grep -q 'No problematic error handling'; then
+  pass "and no scan that depended on it reports a pass"
+else
+  fail "a scan reported a pass through a broken filter"
+fi
+
+# A test module that is not the last item: the filter would hide everything after it,
+# so a file --check flags is scanned whole and the production code below still counts.
+repo="$(fixture misread <<'EOF'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {}
+}
+
+pub fn after() -> u32 {
+    let _unused = mock_value();
+    2
+}
+EOF
+)"
+if [ "$(validate_exit "$repo")" = "1" ] && plain | grep -q 'underscore-prefixed names' && plain | grep -q 'mock/stub patterns' && plain | grep -q 'crates/demo/src/lib.rs:8:'; then
+  pass "production code after a misplaced test module still fails, naming the file and line"
+else
+  fail "code after a misplaced test module was hidden: $(plain | grep -E '❌|✅ No (production|underscore)' || true)"
 fi
 
 if [ "$failures" -gt 0 ]; then

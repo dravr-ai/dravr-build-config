@@ -249,13 +249,21 @@ elif [ -z "$CHANGED_FILES" ] || printf '%s\n' "$CHANGED_FILES" | grep -qE "$VALI
     echo "Pre-push: architectural validation..."
     # stdin is redirected because pre-push receives the ref list on it, and
     # validate.sh documents that an rg with an empty path argument will otherwise
-    # read stdin and block. Output is held and replayed only on failure, matching
-    # the terse style of the fmt gate below.
+    # read stdin and block. Output is held: replayed in full on failure, matching
+    # the terse style of the fmt gate below, and as its warnings alone on a pass.
     if ! ARCH_OUTPUT=$(bash "$ARCH_VALIDATE" < /dev/null 2>&1); then
         printf '%s\n' "$ARCH_OUTPUT"
         echo ""
         echo "BLOCKED: Architectural validation failed. Fix the issues above before pushing."
         exit 1
+    fi
+    # A pass can still carry warnings: a test-module layout the scans had to read
+    # whole, a register gate that is not checked out. Held back, they reached no one
+    # (carnet#941), so each warning line is printed with the verdict.
+    ARCH_WARNINGS=$(printf '%s\n' "$ARCH_OUTPUT" | grep '⚠' || true)
+    if [ -n "$ARCH_WARNINGS" ]; then
+        echo "Pre-push: architectural validation passed with warnings:"
+        printf '%s\n' "$ARCH_WARNINGS"
     fi
 fi
 

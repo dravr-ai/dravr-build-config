@@ -43,16 +43,38 @@ warn_validation() {
     echo -e "${YELLOW}⚠️  $1${NC}"
 }
 
-# Matches in production code only: `path:line:content` for every match of $1
-# under the remaining arguments (rg paths and flags), minus the lines inside a
-# file's trailing `#[cfg(test)] mod tests { ... }`. A unit test's unwrap, expect,
-# panic!, mock or `let _x` is test code, exactly as it is under tests/.
-# test-module-lines.sh documents the layout it assumes; the "Test module layout"
-# check below reports any file it would misread.
+# prod_src_matches <out-file> <pattern> <rg paths and flags…>
+# Writes to <out-file> the matches in production code only: `path:line:content` for
+# every match, minus the lines inside a file's trailing `#[cfg(test)] mod tests { ... }`.
+# A unit test's unwrap, expect, panic!, mock or `let _x` is test code, exactly as it is
+# under tests/. test-module-lines.sh documents the layout it assumes; a file whose
+# layout --check flags (MISREAD_FILES, below) is kept whole, unfiltered, so a layout the
+# filter would misread can only add matches, never hide production code.
+#
+# Each step's exit status is checked on its own (carnet#941): a scan that pipes rg into
+# the filter and counts lines reads a crashed filter as a clean tree. An rg that could
+# not search, or a filter that could not run, fails the validation and returns 1, and
+# the caller then reports no verdict for that scan.
 TEST_MODULE_LINES="$SCRIPT_DIR/test-module-lines.sh"
 prod_src_matches() {
-    local pattern="$1"; shift
-    { rg -n --with-filename "$pattern" "$@" 2>/dev/null < /dev/null || true; } | "$TEST_MODULE_LINES"
+    local out="$1" pattern="$2" rc=0
+    shift 2
+    rg -n --with-filename "$pattern" "$@" >"$out.raw" 2>"$out.err" < /dev/null || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        fail_validation "rg could not scan for '$pattern' (exit $rc) — nothing was checked"
+        sed 's/^/   /' "$out.err" | head -5
+        return 1
+    fi
+    # shellcheck disable=SC2016
+    local split='BEGIN { while ((getline f < MISREAD) > 0) misread[f] = 1; close(MISREAD) }'
+    awk -F: -v MISREAD="$MISREAD_FILES" "$split"' ($1 in misread)' "$out.raw" >"$out.whole"
+    awk -F: -v MISREAD="$MISREAD_FILES" "$split"' !($1 in misread)' "$out.raw" >"$out.unfiltered"
+    if ! "$TEST_MODULE_LINES" <"$out.unfiltered" >"$out.filtered" 2>"$out.err"; then
+        fail_validation "test-module filter failed ($TEST_MODULE_LINES) — the '$pattern' scan was not checked"
+        sed 's/^/   /' "$out.err" | head -5
+        return 1
+    fi
+    cat "$out.filtered" "$out.whole" >"$out"
 }
 
 # Determine scan paths
@@ -80,6 +102,19 @@ echo "Project: $PROJECT_ROOT"
 echo "Sources: $SRC_PATHS"
 
 cd "$PROJECT_ROOT"
+
+SCAN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/validate.XXXXXX") || { echo -e "${RED}❌ mktemp failed — nothing was checked${NC}"; exit 1; }
+trap 'rm -rf "$SCAN_TMP"' EXIT
+
+# The test-module layout, read before the src/ scans because they depend on it: every
+# file --check flags is scanned whole (see prod_src_matches). Its verdict is reported
+# in the "Test module layout" section below; a check that could not run at all is a
+# failure there, since no file's layout is then known.
+MISREAD_FILES="$SCAN_TMP/misread-files"
+LAYOUT_RC=0
+# shellcheck disable=SC2086
+LAYOUT_ERRORS=$("$TEST_MODULE_LINES" --check $SRC_PATHS 2>"$SCAN_TMP/layout.err" < /dev/null) || LAYOUT_RC=$?
+printf '%s\n' "$LAYOUT_ERRORS" | sed -n 's/^\(.*\):[0-9][0-9]*: .*/\1/p' | sort -u >"$MISREAD_FILES"
 
 # ============================================================================
 # FAST-FAIL: Backup files
@@ -138,20 +173,25 @@ echo -e "${BLUE}Checking for problematic error handling...${NC}"
 # comment explaining that `Row::get` is `try_get().unwrap()` is prose, not a call.
 # The filenames are cut back off after the test-module filter so the comment
 # filter sees the source line itself, as it did with --no-filename.
-UNWRAPS=$(prod_src_matches "\.unwrap\(\)" $SRC_PATHS | cut -d: -f3- | rg -v "^\s*//" | rg -v "// Safe|hardcoded.*valid|static.*data" | wc -l | tr -d ' ')
-EXPECTS=$(prod_src_matches "\.expect\(" $SRC_PATHS | cut -d: -f3- | rg -v "^\s*//" | rg -v "// Safe" | wc -l | tr -d ' ')
-PANICS=$(prod_src_matches "panic!\(" $SRC_PATHS | wc -l | tr -d ' ')
-if [ "${UNWRAPS:-0}" -gt 0 ]; then
-    fail_validation "Found $UNWRAPS problematic .unwrap() calls"
-fi
-if [ "${EXPECTS:-0}" -gt 0 ]; then
-    fail_validation "Found $EXPECTS problematic .expect() calls"
-fi
-if [ "${PANICS:-0}" -gt 0 ]; then
-    fail_validation "Found $PANICS panic!() calls in production code"
-fi
-if [ "${UNWRAPS:-0}" -eq 0 ] && [ "${EXPECTS:-0}" -eq 0 ] && [ "${PANICS:-0}" -eq 0 ]; then
-    pass_validation "No problematic error handling"
+# shellcheck disable=SC2086
+if prod_src_matches "$SCAN_TMP/unwraps" "\.unwrap\(\)" $SRC_PATHS &&
+   prod_src_matches "$SCAN_TMP/expects" "\.expect\(" $SRC_PATHS &&
+   prod_src_matches "$SCAN_TMP/panics" "panic!\(" $SRC_PATHS; then
+    UNWRAPS=$(cut -d: -f3- "$SCAN_TMP/unwraps" | { rg -v "^\s*//" || true; } | { rg -v "// Safe|hardcoded.*valid|static.*data" || true; } | wc -l | tr -d ' ')
+    EXPECTS=$(cut -d: -f3- "$SCAN_TMP/expects" | { rg -v "^\s*//" || true; } | { rg -v "// Safe" || true; } | wc -l | tr -d ' ')
+    PANICS=$(grep -c . "$SCAN_TMP/panics" || true)
+    if [ "${UNWRAPS:-0}" -gt 0 ]; then
+        fail_validation "Found $UNWRAPS problematic .unwrap() calls"
+    fi
+    if [ "${EXPECTS:-0}" -gt 0 ]; then
+        fail_validation "Found $EXPECTS problematic .expect() calls"
+    fi
+    if [ "${PANICS:-0}" -gt 0 ]; then
+        fail_validation "Found $PANICS panic!() calls in production code"
+    fi
+    if [ "${UNWRAPS:-0}" -eq 0 ] && [ "${EXPECTS:-0}" -eq 0 ] && [ "${PANICS:-0}" -eq 0 ]; then
+        pass_validation "No problematic error handling"
+    fi
 fi
 
 # ============================================================================
@@ -178,11 +218,16 @@ fi
 # Production mocks
 # ============================================================================
 echo -e "${BLUE}Checking for production mock code...${NC}"
-MOCKS=$(prod_src_matches "mock_|get_mock|return.*mock|demo purposes|for demo|stub implementation|mock implementation" $SRC_PATHS -g "!*/bin/*" -g "!*/tests/*" | rg -v "// |/// |//!" | wc -l | tr -d ' ')
-if [ "${MOCKS:-0}" -gt 0 ]; then
-    fail_validation "Found $MOCKS mock/stub patterns in production code"
-else
-    pass_validation "No production mocks"
+# shellcheck disable=SC2086
+if prod_src_matches "$SCAN_TMP/mocks" "mock_|get_mock|return.*mock|demo purposes|for demo|stub implementation|mock implementation" $SRC_PATHS -g "!*/bin/*" -g "!*/tests/*"; then
+    MOCK_HITS=$({ rg -v "// |/// |//!" "$SCAN_TMP/mocks" || true; })
+    MOCKS=$(printf '%s' "$MOCK_HITS" | grep -c . || true)
+    if [ "${MOCKS:-0}" -gt 0 ]; then
+        fail_validation "Found $MOCKS mock/stub patterns in production code"
+        printf '%s\n' "$MOCK_HITS" | head -5
+    else
+        pass_validation "No production mocks"
+    fi
 fi
 
 # ============================================================================
@@ -192,14 +237,17 @@ echo -e "${BLUE}Checking for underscore-prefixed names...${NC}"
 # A `let _guard = lock.lock().await;` binding is the one underscore name that must
 # stay: it holds an RAII guard to the end of scope, and "removing the variable"
 # as `let _ = ...` drops the guard, and releases the lock, on the same line.
-UNDERSCORE_HITS=$(prod_src_matches "fn _[a-zA-Z]|let _[a-zA-Z]|struct _[a-zA-Z]|enum _[a-zA-Z]" $SRC_PATHS -g "!*/bin/*" | rg -v "let (mut )?_[a-z_]*guard\\b" || true)
-UNDERSCORES=$(printf '%s' "$UNDERSCORE_HITS" | grep -c . || true)
-UNDERSCORES=${UNDERSCORES:-0}
-if [ "$UNDERSCORES" -gt 0 ]; then
-    fail_validation "Found $UNDERSCORES underscore-prefixed names (remove variable, don't hide it)"
-    printf '%s\n' "$UNDERSCORE_HITS" | head -5
-else
-    pass_validation "No underscore-prefixed names"
+# shellcheck disable=SC2086
+if prod_src_matches "$SCAN_TMP/underscores" "fn _[a-zA-Z]|let _[a-zA-Z]|struct _[a-zA-Z]|enum _[a-zA-Z]" $SRC_PATHS -g "!*/bin/*"; then
+    UNDERSCORE_HITS=$({ rg -v "let (mut )?_[a-z_]*guard\\b" "$SCAN_TMP/underscores" || true; })
+    UNDERSCORES=$(printf '%s' "$UNDERSCORE_HITS" | grep -c . || true)
+    UNDERSCORES=${UNDERSCORES:-0}
+    if [ "$UNDERSCORES" -gt 0 ]; then
+        fail_validation "Found $UNDERSCORES underscore-prefixed names (remove variable, don't hide it)"
+        printf '%s\n' "$UNDERSCORE_HITS" | head -5
+    else
+        pass_validation "No underscore-prefixed names"
+    fi
 fi
 
 # ============================================================================
@@ -290,19 +338,17 @@ fi
 # code from those scans, so it is reported here. A repo fails on it by setting
 # `enforce_layout = true` under [test_modules] in validation-patterns.local.toml.
 echo -e "${BLUE}Checking test module layout...${NC}"
-if [ -n "$SRC_PATHS" ]; then
-    # shellcheck disable=SC2086
-    LAYOUT_ERRORS=$("$TEST_MODULE_LINES" --check $SRC_PATHS 2>&1 < /dev/null || true)
-else
-    LAYOUT_ERRORS=""
-fi
+# Run before the scans (see MISREAD_FILES); reported here.
 LAYOUT_COUNT=$(printf '%s\n' "$LAYOUT_ERRORS" | grep -c . || true)
 ENFORCE_LAYOUT=$(grep -E "^[[:space:]]*enforce_layout[[:space:]]*=[[:space:]]*true" "$LOCAL_PATTERNS_FILE" 2>/dev/null | wc -l | tr -d ' ')
-if [ "${LAYOUT_COUNT:-0}" -gt 0 ]; then
+if [ "$LAYOUT_RC" -gt 1 ]; then
+    fail_validation "The test module layout check could not run (exit $LAYOUT_RC) — no file's layout is known"
+    sed 's/^/   /' "$SCAN_TMP/layout.err" | head -5
+elif [ "${LAYOUT_COUNT:-0}" -gt 0 ]; then
     if [ "${ENFORCE_LAYOUT:-0}" -gt 0 ]; then
         fail_validation "Found $LAYOUT_COUNT test module layout problem(s) — the test module must be a trailing inline mod"
     else
-        warn_validation "Found $LAYOUT_COUNT test module layout problem(s) — the src/ scans may misread these files"
+        warn_validation "Found $LAYOUT_COUNT test module layout problem(s) — those files were scanned whole, test module included"
     fi
     printf '%s\n' "$LAYOUT_ERRORS" | head -5
 else
