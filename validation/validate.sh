@@ -54,7 +54,9 @@ warn_validation() {
 # Each step's exit status is checked on its own (carnet#941): a scan that pipes rg into
 # the filter and counts lines reads a crashed filter as a clean tree. An rg that could
 # not search, or a filter that could not run, fails the validation and returns 1, and
-# the caller then reports no verdict for that scan.
+# the caller then reports no verdict for that scan. So does a split by layout that
+# could not run (carnet#927): an awk that died there left the filter nothing to read,
+# and the scan counted zero.
 TEST_MODULE_LINES="$SCRIPT_DIR/test-module-lines.sh"
 prod_src_matches() {
     local out="$1" pattern="$2" rc=0
@@ -67,14 +69,39 @@ prod_src_matches() {
     fi
     # shellcheck disable=SC2016
     local split='BEGIN { while ((getline f < MISREAD) > 0) misread[f] = 1; close(MISREAD) }'
-    awk -F: -v MISREAD="$MISREAD_FILES" "$split"' ($1 in misread)' "$out.raw" >"$out.whole"
-    awk -F: -v MISREAD="$MISREAD_FILES" "$split"' !($1 in misread)' "$out.raw" >"$out.unfiltered"
+    if ! awk -F: -v MISREAD="$MISREAD_FILES" "$split"' ($1 in misread)' "$out.raw" >"$out.whole" 2>"$out.err" ||
+       ! awk -F: -v MISREAD="$MISREAD_FILES" "$split"' !($1 in misread)' "$out.raw" >"$out.unfiltered" 2>"$out.err"; then
+        fail_validation "could not split the '$pattern' matches by test-module layout — the scan was not checked"
+        sed 's/^/   /' "$out.err" | head -5
+        return 1
+    fi
     if ! "$TEST_MODULE_LINES" <"$out.unfiltered" >"$out.filtered" 2>"$out.err"; then
         fail_validation "test-module filter failed ($TEST_MODULE_LINES) — the '$pattern' scan was not checked"
         sed 's/^/   /' "$out.err" | head -5
         return 1
     fi
     cat "$out.filtered" "$out.whole" >"$out"
+}
+
+# drop_lines <file> <pattern>: removes, in place, every line of <file> matching <pattern>.
+# It is how a scan exempts a line, and it returns 1 when rg could not run: rg -v exits 1
+# when it drops every line, which is a clean result, and above 1 when it searched nothing.
+# A `{ rg -v … || true; }` read that crash as "every line exempted" (carnet#927).
+drop_lines() {
+    local rc=0
+    rg -v "$2" "$1" >"$1.kept" 2>"$1.err" < /dev/null || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        sed 's/^/   /' "$1.err" | head -5
+        return 1
+    fi
+    mv "$1.kept" "$1"
+}
+
+# count_lines <file>: how many non-empty lines <file> holds. Under set -e an awk that
+# cannot read the file stops the script, where `grep -c . || true` printed nothing and
+# the caller's ${n:-0} read it as zero findings.
+count_lines() {
+    awk 'NF { n++ } END { print n + 0 }' "$1"
 }
 
 # Determine scan paths
@@ -114,7 +141,13 @@ MISREAD_FILES="$SCAN_TMP/misread-files"
 LAYOUT_RC=0
 # shellcheck disable=SC2086
 LAYOUT_ERRORS=$("$TEST_MODULE_LINES" --check $SRC_PATHS 2>"$SCAN_TMP/layout.err" < /dev/null) || LAYOUT_RC=$?
-printf '%s\n' "$LAYOUT_ERRORS" | sed -n 's/^\(.*\):[0-9][0-9]*: .*/\1/p' | sort -u >"$MISREAD_FILES"
+# Each step is judged on its own: a sed or sort that died here would leave a misread file
+# out of the list, and the filter would then hide the production code after its tests.
+if ! printf '%s\n' "$LAYOUT_ERRORS" | sed -n 's/^\(.*\):[0-9][0-9]*: .*/\1/p' >"$MISREAD_FILES.unsorted" ||
+   ! sort -u "$MISREAD_FILES.unsorted" >"$MISREAD_FILES"; then
+    echo -e "${RED}❌ could not list the files whose test-module layout the filter would misread — nothing was checked${NC}"
+    exit 1
+fi
 
 # ============================================================================
 # FAST-FAIL: Backup files
@@ -177,20 +210,29 @@ echo -e "${BLUE}Checking for problematic error handling...${NC}"
 if prod_src_matches "$SCAN_TMP/unwraps" "\.unwrap\(\)" $SRC_PATHS &&
    prod_src_matches "$SCAN_TMP/expects" "\.expect\(" $SRC_PATHS &&
    prod_src_matches "$SCAN_TMP/panics" "panic!\(" $SRC_PATHS; then
-    UNWRAPS=$(cut -d: -f3- "$SCAN_TMP/unwraps" | { rg -v "^\s*//" || true; } | { rg -v "// Safe|hardcoded.*valid|static.*data" || true; } | wc -l | tr -d ' ')
-    EXPECTS=$(cut -d: -f3- "$SCAN_TMP/expects" | { rg -v "^\s*//" || true; } | { rg -v "// Safe" || true; } | wc -l | tr -d ' ')
-    PANICS=$(grep -c . "$SCAN_TMP/panics" || true)
-    if [ "${UNWRAPS:-0}" -gt 0 ]; then
-        fail_validation "Found $UNWRAPS problematic .unwrap() calls"
-    fi
-    if [ "${EXPECTS:-0}" -gt 0 ]; then
-        fail_validation "Found $EXPECTS problematic .expect() calls"
-    fi
-    if [ "${PANICS:-0}" -gt 0 ]; then
-        fail_validation "Found $PANICS panic!() calls in production code"
-    fi
-    if [ "${UNWRAPS:-0}" -eq 0 ] && [ "${EXPECTS:-0}" -eq 0 ] && [ "${PANICS:-0}" -eq 0 ]; then
-        pass_validation "No problematic error handling"
+    cut -d: -f3- "$SCAN_TMP/unwraps" >"$SCAN_TMP/unwraps.code"
+    cut -d: -f3- "$SCAN_TMP/expects" >"$SCAN_TMP/expects.code"
+    if ! drop_lines "$SCAN_TMP/unwraps.code" "^\s*//" ||
+       ! drop_lines "$SCAN_TMP/unwraps.code" "// Safe|hardcoded.*valid|static.*data" ||
+       ! drop_lines "$SCAN_TMP/expects.code" "^\s*//" ||
+       ! drop_lines "$SCAN_TMP/expects.code" "// Safe"; then
+        fail_validation "the unwrap/expect exemption filter could not run — the error handling scan was not checked"
+    else
+        UNWRAPS=$(count_lines "$SCAN_TMP/unwraps.code")
+        EXPECTS=$(count_lines "$SCAN_TMP/expects.code")
+        PANICS=$(count_lines "$SCAN_TMP/panics")
+        if [ "${UNWRAPS:-0}" -gt 0 ]; then
+            fail_validation "Found $UNWRAPS problematic .unwrap() calls"
+        fi
+        if [ "${EXPECTS:-0}" -gt 0 ]; then
+            fail_validation "Found $EXPECTS problematic .expect() calls"
+        fi
+        if [ "${PANICS:-0}" -gt 0 ]; then
+            fail_validation "Found $PANICS panic!() calls in production code"
+        fi
+        if [ "${UNWRAPS:-0}" -eq 0 ] && [ "${EXPECTS:-0}" -eq 0 ] && [ "${PANICS:-0}" -eq 0 ]; then
+            pass_validation "No problematic error handling"
+        fi
     fi
 fi
 
@@ -220,13 +262,16 @@ fi
 echo -e "${BLUE}Checking for production mock code...${NC}"
 # shellcheck disable=SC2086
 if prod_src_matches "$SCAN_TMP/mocks" "mock_|get_mock|return.*mock|demo purposes|for demo|stub implementation|mock implementation" $SRC_PATHS -g "!*/bin/*" -g "!*/tests/*"; then
-    MOCK_HITS=$({ rg -v "// |/// |//!" "$SCAN_TMP/mocks" || true; })
-    MOCKS=$(printf '%s' "$MOCK_HITS" | grep -c . || true)
-    if [ "${MOCKS:-0}" -gt 0 ]; then
-        fail_validation "Found $MOCKS mock/stub patterns in production code"
-        printf '%s\n' "$MOCK_HITS" | head -5
+    if ! drop_lines "$SCAN_TMP/mocks" "// |/// |//!"; then
+        fail_validation "the mock comment filter could not run — the production mock scan was not checked"
     else
-        pass_validation "No production mocks"
+        MOCKS=$(count_lines "$SCAN_TMP/mocks")
+        if [ "$MOCKS" -gt 0 ]; then
+            fail_validation "Found $MOCKS mock/stub patterns in production code"
+            head -5 "$SCAN_TMP/mocks"
+        else
+            pass_validation "No production mocks"
+        fi
     fi
 fi
 
@@ -239,14 +284,16 @@ echo -e "${BLUE}Checking for underscore-prefixed names...${NC}"
 # as `let _ = ...` drops the guard, and releases the lock, on the same line.
 # shellcheck disable=SC2086
 if prod_src_matches "$SCAN_TMP/underscores" "fn _[a-zA-Z]|let _[a-zA-Z]|struct _[a-zA-Z]|enum _[a-zA-Z]" $SRC_PATHS -g "!*/bin/*"; then
-    UNDERSCORE_HITS=$({ rg -v "let (mut )?_[a-z_]*guard\\b" "$SCAN_TMP/underscores" || true; })
-    UNDERSCORES=$(printf '%s' "$UNDERSCORE_HITS" | grep -c . || true)
-    UNDERSCORES=${UNDERSCORES:-0}
-    if [ "$UNDERSCORES" -gt 0 ]; then
-        fail_validation "Found $UNDERSCORES underscore-prefixed names (remove variable, don't hide it)"
-        printf '%s\n' "$UNDERSCORE_HITS" | head -5
+    if ! drop_lines "$SCAN_TMP/underscores" "let (mut )?_[a-z_]*guard\\b"; then
+        fail_validation "the guard-binding filter could not run — the underscore-name scan was not checked"
     else
-        pass_validation "No underscore-prefixed names"
+        UNDERSCORES=$(count_lines "$SCAN_TMP/underscores")
+        if [ "$UNDERSCORES" -gt 0 ]; then
+            fail_validation "Found $UNDERSCORES underscore-prefixed names (remove variable, don't hide it)"
+            head -5 "$SCAN_TMP/underscores"
+        else
+            pass_validation "No underscore-prefixed names"
+        fi
     fi
 fi
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Fixture test for validate.sh's own rules — each scan fails the repo that breaks it and names the file
-# ABOUTME: Pins the rules carried over from patterns.toml and that the src/ scans fail closed
+# ABOUTME: Pins the rules carried over from patterns.toml and that the src/ scans fail closed, filters included
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
@@ -116,6 +116,43 @@ if ! plain | grep -q 'No problematic error handling'; then
   pass "and no scan that depended on it reports a pass"
 else
   fail "a scan reported a pass through a broken filter"
+fi
+
+# carnet#927: the steps around the filter fail closed too. A shim that crashes one tool
+# on one call, and runs the real one otherwise, stands in for a mawk or rg that dies.
+# shim <dir> <tool> <case-pattern on "$*"> — a PATH entry whose <tool> exits 2 on a match
+shim() {
+  local dir="$WORK/$1" real
+  real="$(command -v "$2")"
+  mkdir -p "$dir"
+  printf '#!/bin/bash\ncase "$*" in %s) echo "%s: simulated crash" >&2; exit 2;; esac\nexec %s "$@"\n' "$3" "$2" "$real" >"$dir/$2"
+  chmod +x "$dir/$2"
+  printf '%s\n' "$dir"
+}
+repo="$(fixture unwrap-in-prod <<'EOF'
+pub fn f(x: Option<u8>) -> u8 {
+    x.unwrap()
+}
+EOF
+)"
+# The split of the matches by test-module layout: a crash left the filter an empty file.
+dir="$(shim awk-split awk "*'!(\$1 in misread)'*")"
+if [ "$(PATH="$dir:$PATH" validate_exit "$repo")" = "1" ] && plain | grep -q 'could not split' && ! plain | grep -q 'No problematic error handling'; then
+  pass "a layout split that cannot run fails the validation and reports no pass"
+else
+  fail "a crashed layout split read as clean: $(plain | grep -E '❌|✅ No problematic|All architectural' || true)"
+fi
+# The exemption filter: `{ rg -v … || true; }` read a crash as every line exempted.
+dir="$(shim rg-exempt rg "-v*")"
+if [ "$(PATH="$dir:$PATH" validate_exit "$repo")" = "1" ] && plain | grep -q 'exemption filter could not run' && ! plain | grep -q 'No problematic error handling'; then
+  pass "an exemption filter that cannot run fails the validation and reports no pass"
+else
+  fail "a crashed exemption filter read as clean: $(plain | grep -E '❌|✅ No problematic|All architectural' || true)"
+fi
+if plain | grep -q 'mock comment filter could not run' && plain | grep -q 'guard-binding filter could not run'; then
+  pass "and the mock and underscore-name scans fail on it too"
+else
+  fail "the mock or underscore-name scan passed through a crashed filter: $(plain | grep -E 'mock|underscore' || true)"
 fi
 
 # A test module that is not the last item: the filter would hide everything after it,
