@@ -104,12 +104,38 @@ count_lines() {
     awk 'NF { n++ } END { print n + 0 }' "$1"
 }
 
+# rg_capture <scan> <out-file> <rg args…>: writes rg's output to <out-file>. rg exits 1
+# when nothing matches, which is a clean result, and above 1 when it could not search:
+# that fails the validation, prints rg's error and returns 1, and the caller then reports
+# no verdict for <scan>. A `rg … 2>/dev/null | awk` read that crash as zero findings, and
+# the scan printed a pass (carnet#1093).
+rg_capture() {
+    local scan="$1" out="$2" rc=0
+    shift 2
+    rg "$@" >"$out" 2>"$out.err" < /dev/null || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        fail_validation "rg could not run the $scan scan (exit $rc) — it was not checked"
+        sed 's/^/   /' "$out.err" | head -5
+        return 1
+    fi
+}
+
+# sum_counts <file>: the total of an rg --count or --count-matches output, one `path:n`
+# line per file, or a bare `n` when rg searched a single file.
+sum_counts() {
+    awk -F: '{ sum += $NF } END { print sum + 0 }' "$1"
+}
+
 # Determine scan paths
 SRC_PATHS=""
 TEST_PATHS=""
 if [ -d "$PROJECT_ROOT/crates" ]; then
     SRC_PATHS="$PROJECT_ROOT/crates/*/src/"
-    TEST_PATHS="$PROJECT_ROOT/crates/*/tests/"
+    # Only when some crate has one: an unmatched glob reaches rg as a literal path, and
+    # rg then exits 2, which the test scans below now read as a search that failed.
+    if compgen -G "$PROJECT_ROOT/crates/*/tests/" > /dev/null; then
+        TEST_PATHS="$PROJECT_ROOT/crates/*/tests/"
+    fi
 fi
 if [ -d "$PROJECT_ROOT/src" ]; then
     SRC_PATHS="$SRC_PATHS $PROJECT_ROOT/src/"
@@ -173,29 +199,40 @@ echo -e "${BLUE}Checking for placeholder implementations...${NC}"
 # PLACEHOLDER is not a rule: it is how prompt templates name their {{PLACEHOLDER}} tokens.
 PLACEHOLDER_PATTERNS="stub implementation|stub for now|stub endpoint|mock implementation|placeholder implementation|placeholder structure|simplified placeholder|this is a placeholder|is a placeholder that|dummy implementation|will be implemented|to be implemented|not yet implemented|In future versions|Implement the code|return mock data|TODO: Implementation|available for real implementation|Would implement|Will implement|(?-i:Implementation would)|(?-i:Should implement)"
 # Exclude comments (/// and //) to avoid matching documentation that describes placeholders
-PLACEHOLDERS=$(rg -i "$PLACEHOLDER_PATTERNS" $SRC_PATHS 2>/dev/null | rg -v "^\s*///|^\s*//" | wc -l | tr -d ' ')
-PLACEHOLDERS=${PLACEHOLDERS:-0}
-if [ "$PLACEHOLDERS" -gt 0 ]; then
-    fail_validation "Found $PLACEHOLDERS placeholder implementations"
-    rg -i "$PLACEHOLDER_PATTERNS" $SRC_PATHS -n 2>/dev/null | rg -v "^\s*///|^\s*//" | head -5
-else
-    pass_validation "No placeholder implementations"
+# shellcheck disable=SC2086
+if rg_capture "placeholder" "$SCAN_TMP/placeholders" -i -n "$PLACEHOLDER_PATTERNS" $SRC_PATHS; then
+    if ! drop_lines "$SCAN_TMP/placeholders" "^\s*///|^\s*//"; then
+        fail_validation "the placeholder comment filter could not run — the placeholder scan was not checked"
+    else
+        PLACEHOLDERS=$(count_lines "$SCAN_TMP/placeholders")
+        if [ "$PLACEHOLDERS" -gt 0 ]; then
+            fail_validation "Found $PLACEHOLDERS placeholder implementations"
+            head -5 "$SCAN_TMP/placeholders"
+        else
+            pass_validation "No placeholder implementations"
+        fi
+    fi
 fi
 
 # ============================================================================
 # Error handling: anyhow forbidden
 # ============================================================================
 echo -e "${BLUE}Checking for forbidden anyhow usage...${NC}"
-ANYHOW_MACRO=$(rg "\\banyhow!\\(|anyhow::anyhow!\\(" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
-ANYHOW_IMPORTS=$(rg "use anyhow::" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
 # A fully qualified `-> anyhow::Result<()>` needs no `use` line, so it is counted on its own.
-ANYHOW_TYPES=$(rg "anyhow::(Result|Error)\\b" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
-ANYHOW_TOTAL=$((ANYHOW_MACRO + ANYHOW_IMPORTS + ANYHOW_TYPES))
-if [ "$ANYHOW_TOTAL" -gt 0 ]; then
-    fail_validation "Found $ANYHOW_TOTAL anyhow usages (use structured error types)"
-    rg "\\banyhow!\\(|use anyhow::|anyhow::(Result|Error)\\b" $SRC_PATHS -n 2>/dev/null | head -5
-else
-    pass_validation "No anyhow usage"
+# shellcheck disable=SC2086
+if rg_capture "anyhow macro" "$SCAN_TMP/anyhow-macro" "\\banyhow!\\(|anyhow::anyhow!\\(" $SRC_PATHS --count &&
+   rg_capture "anyhow import" "$SCAN_TMP/anyhow-imports" "use anyhow::" $SRC_PATHS --count &&
+   rg_capture "anyhow type" "$SCAN_TMP/anyhow-types" "anyhow::(Result|Error)\\b" $SRC_PATHS --count; then
+    ANYHOW_MACRO=$(sum_counts "$SCAN_TMP/anyhow-macro")
+    ANYHOW_IMPORTS=$(sum_counts "$SCAN_TMP/anyhow-imports")
+    ANYHOW_TYPES=$(sum_counts "$SCAN_TMP/anyhow-types")
+    ANYHOW_TOTAL=$((ANYHOW_MACRO + ANYHOW_IMPORTS + ANYHOW_TYPES))
+    if [ "$ANYHOW_TOTAL" -gt 0 ]; then
+        fail_validation "Found $ANYHOW_TOTAL anyhow usages (use structured error types)"
+        rg "\\banyhow!\\(|use anyhow::|anyhow::(Result|Error)\\b" $SRC_PATHS -n 2>/dev/null | head -5
+    else
+        pass_validation "No anyhow usage"
+    fi
 fi
 
 # ============================================================================
@@ -240,20 +277,26 @@ fi
 # TODOs/FIXMEs
 # ============================================================================
 echo -e "${BLUE}Checking for incomplete code markers...${NC}"
-# `< /dev/null` is load-bearing: with an empty path variable rg falls back to
-# reading stdin and blocks forever. A repo with no tests/ directory hung this
+# rg_capture's `< /dev/null` is load-bearing: with an empty path variable rg falls back
+# to reading stdin and blocks forever. A repo with no tests/ directory hung this
 # script indefinitely (CI only survived it because its stdin is already closed).
-TODOS=$(rg "\\b(TODO|FIXME|XXX)\\b" $SRC_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null < /dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+TODO_SCANNED=true
+# shellcheck disable=SC2086
+rg_capture "TODO marker" "$SCAN_TMP/todos" "\\b(TODO|FIXME|XXX)\\b" $SRC_PATHS -g "!*.json" -g "!*.md" --count || TODO_SCANNED=false
+: >"$SCAN_TMP/todos-tests"
 if [ -n "$TEST_PATHS" ]; then
-    TODOS_TESTS=$(rg "\\b(TODO|FIXME|XXX)\\b" $TEST_PATHS -g "!*.json" -g "!*.md" --count 2>/dev/null < /dev/null | awk -F: '{sum+=$2} END {print sum+0}')
-else
-    TODOS_TESTS=0
+    # shellcheck disable=SC2086
+    rg_capture "TODO marker (tests)" "$SCAN_TMP/todos-tests" "\\b(TODO|FIXME|XXX)\\b" $TEST_PATHS -g "!*.json" -g "!*.md" --count || TODO_SCANNED=false
 fi
-TODOS_TOTAL=$((TODOS + TODOS_TESTS))
-if [ "$TODOS_TOTAL" -gt 0 ]; then
-    fail_validation "Found $TODOS_TOTAL TODO/FIXME/XXX markers (src:$TODOS tests:$TODOS_TESTS)"
-else
-    pass_validation "No incomplete code markers"
+if [ "$TODO_SCANNED" = true ]; then
+    TODOS=$(sum_counts "$SCAN_TMP/todos")
+    TODOS_TESTS=$(sum_counts "$SCAN_TMP/todos-tests")
+    TODOS_TOTAL=$((TODOS + TODOS_TESTS))
+    if [ "$TODOS_TOTAL" -gt 0 ]; then
+        fail_validation "Found $TODOS_TOTAL TODO/FIXME/XXX markers (src:$TODOS tests:$TODOS_TESTS)"
+    else
+        pass_validation "No incomplete code markers"
+    fi
 fi
 
 # ============================================================================
@@ -314,20 +357,30 @@ if [ -f "$LOCAL_PATTERNS_FILE" ]; then
     fi
 fi
 
-CLIPPY_ALLOWS=$(rg "#\[allow\(" $SRC_PATHS -g "!*/bin/*" -o -r '$0' --no-line-number 2>/dev/null \
-    | sed -E 's/^.*#\[allow\(//; s/\)\].*$//' \
-    | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
-    | grep '^clippy::' \
-    | grep -v -E "^clippy::($ALLOWED_CLIPPY)$" \
-    | wc -l | tr -d ' ')
-if [ "${CLIPPY_ALLOWS:-0}" -gt 0 ]; then
-    fail_validation "Found $CLIPPY_ALLOWS unauthorized #[allow(clippy::)] attributes"
-    rg "#\[allow\(" $SRC_PATHS -g "!*/bin/*" -n 2>/dev/null \
-        | grep -E "clippy::" \
-        | grep -v -E "$ALLOWED_CLIPPY" \
-        | head -5
-else
-    pass_validation "No unauthorized clippy allows"
+# -o prints each whole attribute, after its path and line: matching only `#[allow(`
+# printed that prefix alone, so no lint name ever reached the allowlist and the scan
+# could not fail (carnet#1093).
+# shellcheck disable=SC2086
+if rg_capture "clippy allow" "$SCAN_TMP/clippy-allows" "#\[allow\([^)]*\)\]" $SRC_PATHS -g "!*/bin/*" -o -n --with-filename; then
+    CLIPPY_ALLOWS=$(sed -E 's/^.*#\[allow\(//; s/\)\].*$//' "$SCAN_TMP/clippy-allows" \
+        | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+        | grep '^clippy::' \
+        | grep -v -E "^clippy::($ALLOWED_CLIPPY)$" \
+        | wc -l | tr -d ' ')
+    if [ "${CLIPPY_ALLOWS:-0}" -gt 0 ]; then
+        fail_validation "Found $CLIPPY_ALLOWS unauthorized #[allow(clippy::)] attributes"
+        # Each attribute that holds a forbidden lint, even beside an allowed one.
+        awk -v allowed="^clippy::($ALLOWED_CLIPPY)$" '{
+            body = $0; sub(/^.*#\[allow\(/, "", body); sub(/\)\].*$/, "", body)
+            n = split(body, lint, ",")
+            for (i = 1; i <= n; i++) {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", lint[i])
+                if (lint[i] ~ /^clippy::/ && lint[i] !~ allowed) { print; break }
+            }
+        }' "$SCAN_TMP/clippy-allows" | head -5
+    else
+        pass_validation "No unauthorized clippy allows"
+    fi
 fi
 
 # ============================================================================
@@ -335,12 +388,15 @@ fi
 # Catches combined-form `#[allow(dead_code, clippy::xxx)]` as well as the bare form.
 # ============================================================================
 echo -e "${BLUE}Checking for dead code hiding...${NC}"
-DEAD_CODE=$(rg "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
-if [ "$DEAD_CODE" -gt 0 ]; then
-    fail_validation "Found $DEAD_CODE #[allow(dead_code)] — remove the dead code instead"
-    rg "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS -n 2>/dev/null | head -5
-else
-    pass_validation "No dead code annotations"
+# shellcheck disable=SC2086
+if rg_capture "dead code" "$SCAN_TMP/dead-code" "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS --count; then
+    DEAD_CODE=$(sum_counts "$SCAN_TMP/dead-code")
+    if [ "$DEAD_CODE" -gt 0 ]; then
+        fail_validation "Found $DEAD_CODE #[allow(dead_code)] — remove the dead code instead"
+        rg "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS -n 2>/dev/null | head -5
+    else
+        pass_validation "No dead code annotations"
+    fi
 fi
 
 # ============================================================================
@@ -352,28 +408,34 @@ fi
 # both lints suppressed simultaneously — implement it or delete it.
 # ============================================================================
 echo -e "${BLUE}Checking for stub-function clippy-allow signature...${NC}"
-STUB_SIGNATURE_FNS=$(rg -U --multiline '#\[allow\([^)]*(unused_self[^)]*unnecessary_wraps|unnecessary_wraps[^)]*unused_self)' $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
-if [ "${STUB_SIGNATURE_FNS:-0}" -gt 0 ]; then
-    fail_validation "Found $STUB_SIGNATURE_FNS stub-disguise function(s) (unused_self + unnecessary_wraps)"
-    rg -U --multiline '#\[allow\([^)]*(unused_self[^)]*unnecessary_wraps|unnecessary_wraps[^)]*unused_self)' $SRC_PATHS -n 2>/dev/null | head -5
-else
-    pass_validation "No stub-function signatures"
+# shellcheck disable=SC2086
+if rg_capture "stub-function signature" "$SCAN_TMP/stub-signatures" -U --multiline '#\[allow\([^)]*(unused_self[^)]*unnecessary_wraps|unnecessary_wraps[^)]*unused_self)' $SRC_PATHS --count; then
+    STUB_SIGNATURE_FNS=$(sum_counts "$SCAN_TMP/stub-signatures")
+    if [ "${STUB_SIGNATURE_FNS:-0}" -gt 0 ]; then
+        fail_validation "Found $STUB_SIGNATURE_FNS stub-disguise function(s) (unused_self + unnecessary_wraps)"
+        rg -U --multiline '#\[allow\([^)]*(unused_self[^)]*unnecessary_wraps|unnecessary_wraps[^)]*unused_self)' $SRC_PATHS -n 2>/dev/null | head -5
+    else
+        pass_validation "No stub-function signatures"
+    fi
 fi
 
 # ============================================================================
 # #[cfg(test)] in src (warning by default, error if local config enforces it)
 # ============================================================================
 echo -e "${BLUE}Checking for inline test modules...${NC}"
-CFG_TEST=$(rg "#\[cfg\(test\)\]" $SRC_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
 ENFORCE_NO_CFG_TEST=$(grep "enforce_no_cfg_test.*true" "$LOCAL_PATTERNS_FILE" 2>/dev/null | wc -l | tr -d ' ')
-if [ "$CFG_TEST" -gt 0 ]; then
-    if [ "${ENFORCE_NO_CFG_TEST:-0}" -gt 0 ]; then
-        fail_validation "Found $CFG_TEST #[cfg(test)] in src/ — tests go in external tests/ directory"
+# shellcheck disable=SC2086
+if rg_capture "inline test module" "$SCAN_TMP/cfg-test" "#\[cfg\(test\)\]" $SRC_PATHS --count; then
+    CFG_TEST=$(sum_counts "$SCAN_TMP/cfg-test")
+    if [ "$CFG_TEST" -gt 0 ]; then
+        if [ "${ENFORCE_NO_CFG_TEST:-0}" -gt 0 ]; then
+            fail_validation "Found $CFG_TEST #[cfg(test)] in src/ — tests go in external tests/ directory"
+        else
+            warn_validation "Found $CFG_TEST #[cfg(test)] in src/ (unit tests; the src/ scans above skip a trailing test module)"
+        fi
     else
-        warn_validation "Found $CFG_TEST #[cfg(test)] in src/ (unit tests; the src/ scans above skip a trailing test module)"
+        pass_validation "No inline test modules"
     fi
-else
-    pass_validation "No inline test modules"
 fi
 
 # ============================================================================
@@ -406,11 +468,14 @@ fi
 # Temporary solutions
 # ============================================================================
 echo -e "${BLUE}Checking for temporary solutions...${NC}"
-TEMP=$(rg "\\bhack\\b|\\bworkaround\\b|\\bquick.*fix\\b|future.*implementation|temporary.*solution|\\btemp\\b.*\\bfix\\b" $SRC_PATHS --count-matches 2>/dev/null | cut -d: -f2 | awk '{sum+=$1} END {print sum+0}')
-if [ "${TEMP:-0}" -gt 0 ]; then
-    fail_validation "Found $TEMP temporary solution markers"
-else
-    pass_validation "No temporary solutions"
+# shellcheck disable=SC2086
+if rg_capture "temporary solution" "$SCAN_TMP/temp" "\\bhack\\b|\\bworkaround\\b|\\bquick.*fix\\b|future.*implementation|temporary.*solution|\\btemp\\b.*\\bfix\\b" $SRC_PATHS --count-matches; then
+    TEMP=$(sum_counts "$SCAN_TMP/temp")
+    if [ "${TEMP:-0}" -gt 0 ]; then
+        fail_validation "Found $TEMP temporary solution markers"
+    else
+        pass_validation "No temporary solutions"
+    fi
 fi
 
 # ============================================================================
@@ -418,29 +483,40 @@ fi
 # ============================================================================
 echo -e "${BLUE}Checking for empty source modules...${NC}"
 EMPTY_MODULES=0
-for rs_file in $(find $SRC_PATHS -name "*.rs" -not -path "*/tests/*" -not -path "*/bin/*" 2>/dev/null); do
+EMPTY_SCANNED=true
+# shellcheck disable=SC2086
+while IFS= read -r rs_file; do
     # Any visibility — pub, pub(crate), pub(super), pub(in path) — and any
     # async/unsafe/extern qualifier before the item keyword counts as a declaration.
-    DECL_COUNT=$(rg "^(pub(\([^)]*\))? )?(async )?(unsafe )?(extern \"[^\"]*\" )?(fn |struct |enum |impl |const |static |type |trait |macro|mod |use )" "$rs_file" --count 2>/dev/null || echo 0)
+    # A crashed rg here used to read as "0 declarations" and blame the file.
+    if ! rg_capture "empty module" "$SCAN_TMP/decls" "^(pub(\([^)]*\))? )?(async )?(unsafe )?(extern \"[^\"]*\" )?(fn |struct |enum |impl |const |static |type |trait |macro|mod |use )" "$rs_file" --count; then
+        EMPTY_SCANNED=false
+        break
+    fi
+    DECL_COUNT=$(sum_counts "$SCAN_TMP/decls")
     if [ "$DECL_COUNT" -eq 0 ]; then
         EMPTY_MODULES=$((EMPTY_MODULES + 1))
         echo "  Empty: $rs_file"
     fi
-done
-if [ "$EMPTY_MODULES" -gt 0 ]; then
-    fail_validation "Found $EMPTY_MODULES empty source modules"
-else
-    pass_validation "No empty source modules"
+done < <(find $SRC_PATHS -name "*.rs" -not -path "*/tests/*" -not -path "*/bin/*" 2>/dev/null)
+if [ "$EMPTY_SCANNED" = true ]; then
+    if [ "$EMPTY_MODULES" -gt 0 ]; then
+        fail_validation "Found $EMPTY_MODULES empty source modules"
+    else
+        pass_validation "No empty source modules"
+    fi
 fi
 
 # ============================================================================
 # Test integrity: ignored tests
 # ============================================================================
 echo -e "${BLUE}Checking test integrity...${NC}"
-if [ -n "$TEST_PATHS" ]; then
-    IGNORED_TESTS=$(rg '#\[ignore' $TEST_PATHS --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+# shellcheck disable=SC2086
+if [ -n "$TEST_PATHS" ] && rg_capture "ignored test" "$SCAN_TMP/ignored" '#\[ignore' $TEST_PATHS --count; then
+    IGNORED_TESTS=$(sum_counts "$SCAN_TMP/ignored")
     # Check allowlist
     ALLOWED_IGNORED=0
+    ALLOWLIST_SCANNED=true
     if [ -f "$PROJECT_ROOT/ignored-tests-allowlist.toml" ]; then
         ALLOWLIST_FILES=$(python3 -c "
 import tomllib
@@ -450,13 +526,21 @@ print(' '.join(config.get('files', [])))
 " 2>/dev/null || echo "")
         if [ -n "$ALLOWLIST_FILES" ]; then
             for f in $ALLOWLIST_FILES; do
-                COUNT=$(rg '#\[ignore' "$f" -c 2>/dev/null || echo 0)
+                # A listed file that is gone allows nothing, as before; one rg cannot read fails.
+                [ -e "$f" ] || continue
+                if ! rg_capture "ignored-test allowlist" "$SCAN_TMP/allowed" '#\[ignore' "$f" -c; then
+                    ALLOWLIST_SCANNED=false
+                    break
+                fi
+                COUNT=$(sum_counts "$SCAN_TMP/allowed")
                 ALLOWED_IGNORED=$((ALLOWED_IGNORED + COUNT))
             done
         fi
     fi
     UNAUTHORIZED=$((IGNORED_TESTS - ALLOWED_IGNORED))
-    if [ "$UNAUTHORIZED" -gt 0 ]; then
+    if [ "$ALLOWLIST_SCANNED" = false ]; then
+        fail_validation "the ignored-test allowlist could not be counted — the ignored-test scan was not checked"
+    elif [ "$UNAUTHORIZED" -gt 0 ]; then
         fail_validation "Found $UNAUTHORIZED unauthorized ignored tests (total: $IGNORED_TESTS, allowed: $ALLOWED_IGNORED)"
     else
         if [ "$IGNORED_TESTS" -gt 0 ]; then
@@ -477,19 +561,21 @@ if [ -d "$PROJECT_ROOT/.github/workflows" ]; then
     if [ -f "$LOCAL_PATTERNS_FILE" ]; then
         COE_EXCLUDES=$(grep "exclude_workflows" "$LOCAL_PATTERNS_FILE" 2>/dev/null | sed 's/.*\[//' | sed 's/\]//' | tr -d '"' | tr ',' '\n' | sed 's/^ //' || echo "")
     fi
-    COE_RESULT=$(rg "continue-on-error: true" "$PROJECT_ROOT/.github/workflows/" 2>/dev/null | grep -v "#.*continue-on-error" || true)
-    for excl in $COE_EXCLUDES; do
-        COE_RESULT=$(echo "$COE_RESULT" | grep -v "$excl" || true)
-    done
-    # `grep -c` prints 0 and exits 1 when nothing matches, so `|| echo 0` used to
-    # append a second 0 and the test saw "0\n0" -> "integer expression expected".
-    # It fell through to the pass branch, so it failed safe, but it printed an
-    # error on every clean run in every repo.
-    COE=$(printf '%s\n' "$COE_RESULT" | grep -c "continue-on-error" || true)
-    if [ "$COE" -gt 0 ]; then
-        fail_validation "Found $COE continue-on-error: true in CI workflows"
-    else
-        pass_validation "No continue-on-error in CI"
+    if rg_capture "continue-on-error" "$SCAN_TMP/coe" "continue-on-error: true" "$PROJECT_ROOT/.github/workflows/"; then
+        COE_RESULT=$(grep -v "#.*continue-on-error" "$SCAN_TMP/coe" || true)
+        for excl in $COE_EXCLUDES; do
+            COE_RESULT=$(echo "$COE_RESULT" | grep -v "$excl" || true)
+        done
+        # `grep -c` prints 0 and exits 1 when nothing matches, so `|| echo 0` used to
+        # append a second 0 and the test saw "0\n0" -> "integer expression expected".
+        # It fell through to the pass branch, so it failed safe, but it printed an
+        # error on every clean run in every repo.
+        COE=$(printf '%s\n' "$COE_RESULT" | grep -c "continue-on-error" || true)
+        if [ "$COE" -gt 0 ]; then
+            fail_validation "Found $COE continue-on-error: true in CI workflows"
+        else
+            pass_validation "No continue-on-error in CI"
+        fi
     fi
 fi
 
@@ -503,19 +589,25 @@ FRONTEND_PATHS=""
 
 if [ -n "$FRONTEND_PATHS" ]; then
     echo -e "${BLUE}Checking JS/TS test integrity...${NC}"
-    JS_SKIPS=$(rg "\\.skip\\(|xit\\(|xdescribe\\(|test\\.skip\\(" $FRONTEND_PATHS -g "*.test.*" -g "*.spec.*" --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
-    if [ "${JS_SKIPS:-0}" -gt 0 ]; then
-        fail_validation "Found $JS_SKIPS skipped JS/TS tests"
-    else
-        pass_validation "No skipped JS/TS tests"
+    # shellcheck disable=SC2086
+    if rg_capture "skipped JS/TS test" "$SCAN_TMP/js-skips" "\\.skip\\(|xit\\(|xdescribe\\(|test\\.skip\\(" $FRONTEND_PATHS -g "*.test.*" -g "*.spec.*" --count; then
+        JS_SKIPS=$(sum_counts "$SCAN_TMP/js-skips")
+        if [ "${JS_SKIPS:-0}" -gt 0 ]; then
+            fail_validation "Found $JS_SKIPS skipped JS/TS tests"
+        else
+            pass_validation "No skipped JS/TS tests"
+        fi
     fi
     # A test body that announces a harness instead of asserting anything.
-    JS_PLACEHOLDER_TESTS=$(rg "In a full E2E test, we would|testing infrastructure ready|testing ready|validation infrastructure ready" $FRONTEND_PATHS -g "*.test.*" -g "*.spec.*" --count 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
-    if [ "${JS_PLACEHOLDER_TESTS:-0}" -gt 0 ]; then
-        fail_validation "Found $JS_PLACEHOLDER_TESTS placeholder JS/TS test bodies"
-        rg -n "In a full E2E test, we would|testing infrastructure ready|testing ready|validation infrastructure ready" $FRONTEND_PATHS -g "*.test.*" -g "*.spec.*" 2>/dev/null | head -5
-    else
-        pass_validation "No placeholder JS/TS test bodies"
+    # shellcheck disable=SC2086
+    if rg_capture "placeholder JS/TS test" "$SCAN_TMP/js-placeholders" "In a full E2E test, we would|testing infrastructure ready|testing ready|validation infrastructure ready" $FRONTEND_PATHS -g "*.test.*" -g "*.spec.*" --count; then
+        JS_PLACEHOLDER_TESTS=$(sum_counts "$SCAN_TMP/js-placeholders")
+        if [ "${JS_PLACEHOLDER_TESTS:-0}" -gt 0 ]; then
+            fail_validation "Found $JS_PLACEHOLDER_TESTS placeholder JS/TS test bodies"
+            rg -n "In a full E2E test, we would|testing infrastructure ready|testing ready|validation infrastructure ready" $FRONTEND_PATHS -g "*.test.*" -g "*.spec.*" 2>/dev/null | head -5
+        else
+            pass_validation "No placeholder JS/TS test bodies"
+        fi
     fi
 fi
 

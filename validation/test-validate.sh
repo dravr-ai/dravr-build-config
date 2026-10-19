@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Fixture test for validate.sh's own rules — each scan fails the repo that breaks it and names the file
-# ABOUTME: Pins the rules carried over from patterns.toml and that the src/ scans fail closed, filters included
+# ABOUTME: Pins the rules carried over from patterns.toml and that every counted scan fails closed when rg or a filter cannot run
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 dravr.ai
@@ -153,6 +153,86 @@ if plain | grep -q 'mock comment filter could not run' && plain | grep -q 'guard
   pass "and the mock and underscore-name scans fail on it too"
 else
   fail "the mock or underscore-name scan passed through a crashed filter: $(plain | grep -E 'mock|underscore' || true)"
+fi
+
+# carnet#1093: the counted scans outside src/'s production split read `rg … 2>/dev/null`,
+# so an rg that crashed on one of them counted zero and printed a pass. A repo that
+# reaches every scan — tests/ with an allowlisted #[ignore], CI workflows, a frontend —
+# passes whole; then each scan's rg alone is crashed, and that scan must fail by name.
+repo="$(fixture every-scan <<'EOF'
+pub fn double(n: u32) -> u32 {
+    n * 2
+}
+EOF
+)"
+mkdir -p "$repo/crates/demo/tests" "$repo/.github/workflows" "$repo/frontend"
+printf '#[ignore]\n#[test]\nfn slow() {}\n' >"$repo/crates/demo/tests/slow.rs"
+printf 'files = ["crates/demo/tests/slow.rs"]\n' >"$repo/ignored-tests-allowlist.toml"
+printf 'on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n' >"$repo/.github/workflows/ci.yml"
+printf 'it("adds", () => expect(1 + 1).toBe(2));\n' >"$repo/frontend/add.test.ts"
+if [ "$(validate_exit "$repo")" = "0" ] && plain | grep -q 'All 1 ignored tests are in allowlist' && plain | grep -q 'No skipped JS/TS tests'; then
+  pass "a repo that reaches every counted scan passes"
+else
+  fail "the every-scan repo did not pass: $(plain | grep -E '❌' || true)"
+fi
+# <label>@<case pattern on rg's "$*">@<the scan's own pass line, an ERE> (rg patterns hold `|`).
+# The unwrap scan still passing proves the shim crashed that one call, not every rg.
+while IFS='@' read -r label pattern verdict; do
+  dir="$(shim "rg-crash-${label// /-}" rg "$pattern")"
+  if [ "$(PATH="$dir:$PATH" validate_exit "$repo")" = "1" ] && plain | grep -q "rg could not run the $label scan" && ! plain | grep -qE "✅ $verdict" &&
+     plain | grep -q '✅ No problematic error handling'; then
+    pass "a crashed rg fails the $label scan and reports no pass"
+  else
+    fail "a crashed rg read as clean in the $label scan: $(plain | grep -E "❌|✅ $verdict" || true)"
+  fi
+done <<'EOF'
+placeholder@*'stub for now'*@No placeholder implementations
+anyhow macro@*'anyhow!'*@No anyhow usage
+anyhow import@'use anyhow::'*@No anyhow usage
+anyhow type@'anyhow::(Result'*@No anyhow usage
+TODO marker@*FIXME*/src/*@No incomplete code markers
+TODO marker (tests)@*FIXME*/tests/*@No incomplete code markers
+clippy allow@*'[^)]*\)\]'*@No unauthorized clippy allows
+dead code@*dead_code*@No dead code annotations
+stub-function signature@*unnecessary_wraps*@No stub-function signatures
+inline test module@'#\[cfg\(test\)\] '*@No inline test modules
+temporary solution@*workaround*@No temporary solutions
+empty module@*'(fn |struct'*@No empty source modules
+ignored test@'#\[ignore'*--count@(No|All [0-9]+) ignored tests
+ignored-test allowlist@'#\[ignore'*-c@(No|All [0-9]+) ignored tests
+continue-on-error@*continue-on-error*@No continue-on-error
+skipped JS/TS test@*xdescribe*@No skipped JS/TS tests
+placeholder JS/TS test@*'infrastructure ready'*@No placeholder JS/TS test bodies
+EOF
+
+# The clippy-allow scan read only the `#[allow(` prefix of each match, so no lint name
+# ever reached the allowlist; an allowed lint beside a forbidden one must still pass.
+repo="$(fixture clippy-allow <<'EOF'
+#[allow(clippy::too_many_lines, clippy::unwrap_used)]
+pub fn f() -> u32 {
+    0
+}
+EOF
+)"
+if [ "$(validate_exit "$repo")" = "1" ] && plain | grep -q 'Found 1 unauthorized #\[allow(clippy::)\]' && plain | grep -q 'crates/demo/src/lib.rs'; then
+  pass "a forbidden clippy allow beside an allowed one fails and names the file"
+else
+  fail "a forbidden clippy allow passed: $(plain | grep -E 'clippy' || true)"
+fi
+
+# A crate with no tests/ directory: the unmatched crates/*/tests/ glob is not handed to
+# rg as a literal path, which rg would now report as a failed search. The test scans are
+# skipped, as for a repo with no tests at all; they used to print a pass over that crash.
+repo="$(fixture no-tests-dir <<'EOF'
+pub fn double(n: u32) -> u32 {
+    n * 2
+}
+EOF
+)"
+if [ "$(validate_exit "$repo")" = "0" ] && ! plain | grep -q 'rg could not run' && ! plain | grep -q 'No ignored tests'; then
+  pass "a crate without a tests/ directory still passes"
+else
+  fail "a crate without tests/ failed: $(plain | grep -E '❌' || true)"
 fi
 
 # A test module that is not the last item: the filter would hide everything after it,

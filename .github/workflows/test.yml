@@ -72,7 +72,7 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get install -y ripgrep
       - name: shellcheck the filter and the tests
-        run: shellcheck -x -S warning validation/test-module-lines.sh validation/test-test-module-lines.sh validation/test-validate.sh
+        run: shellcheck -x -S warning validation/validate.sh validation/test-module-lines.sh validation/test-test-module-lines.sh validation/test-validate.sh
       - name: test-module filter and validate.sh scans
         run: bash validation/test-test-module-lines.sh
       - name: validate.sh's own rules
