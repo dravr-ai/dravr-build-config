@@ -34,7 +34,7 @@ REPO="$TMP/sat"
 mkdir -p "$REPO/src" "$REPO/tests" "$REPO/scripts/ci"
 cd "$REPO" || exit 1
 git init -q .
-printf '[toolchain]\nchannel = "1.98.1"\ncomponents = ["clippy", "rustfmt"]\n' > rust-toolchain.toml
+printf '[toolchain]\nchannel = "1.99.1"\ncomponents = ["clippy", "rustfmt"]\n' > rust-toolchain.toml
 cat > Cargo.toml <<'EOF'
 [package]
 name = "fixture"
