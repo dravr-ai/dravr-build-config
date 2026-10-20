@@ -77,6 +77,20 @@ check "does not block when the submodule is not checked out" 0 "$st"
 printf '%s' "$out" | grep -q "direction unverified" \
     && ok "says the direction could not be checked" || bad "passed in silence: $out"
 
+# 6. a linked worktree: git hands the hook the worktree's GIT_DIR and index, which
+#    `git -C sub` kept, so every pointer read as missing and nothing was checked
+reset_index
+$G worktree add -q "$TMP/wt" 2>/dev/null
+cd "$TMP/wt" && $G submodule update -q --init 2>/dev/null
+WT_GIT_DIR=$($G rev-parse --absolute-git-dir)
+$G -C sub checkout -q "$A"; $G add sub; echo v > other.txt; $G add other.txt
+out=$(GIT_DIR="$WT_GIT_DIR" GIT_INDEX_FILE="$WT_GIT_DIR/index" bash "$HOOK" 2>&1); st=$?
+check "refuses a rewind in a linked worktree" 1 "$st"
+printf '%s' "$out" | grep -q "direction unverified" \
+    && bad "the worktree's GIT_DIR hid the submodule: $out" \
+    || ok "reads the submodule's own objects from a worktree"
+cd "$TMP/super" || exit 1
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
