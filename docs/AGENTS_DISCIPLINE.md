@@ -68,6 +68,26 @@ Every commit that adds a new abstraction must identify what it replaces and dele
 ### Complete Deletion, Not Deprecation
 Don't mark code `// DEPRECATED` or `// TODO remove later`. Delete it. If deletion is blocked, file an issue and link it from the code.
 
+## One Integration-Test Binary per Crate
+
+Every top-level `tests/*.rs` is a separate binary linked against the whole dependency graph:
+dravr-platform's 793 of them took 84 GiB and ~13 minutes; one binary per crate takes ~415 MB
+and ~4 minutes.
+
+- A crate's integration tests are modules of `<crate>/tests/it/main.rs`, one module per suite
+  (`mod billing_test;` → `tests/it/billing_test.rs`, nested directories allowed). Shared
+  helpers are declared there too (`mod helpers;`), once, not re-included by every suite.
+- A top-level `tests/<suite>.rs` (its own binary) is allowed **only** for a suite that writes
+  the process environment (`std::env::set_var` / `remove_var`): a binary's tests share one
+  environment. For the same reason nothing under `tests/it/` writes it.
+- Explicit `[[test]]` targets under a subdirectory (e.g. `tests/live/` behind
+  `required-features`, with `autotests = false`) stay as declared.
+- Run one suite: `cargo test -p <crate> --test it -- <suite>::` — the filter is a substring
+  match, so end it with `::` or `billing_test` also runs `billing_test_v2`.
+- The shared validation enforces this once a repo sets `one_binary = true` under
+  `[test_layout]` in `validation-patterns.local.toml`; until then it only prints each crate's
+  binary count.
+
 ## Pushback Triggers — When to Stop and Ask
 
 STOP and ask the user before proceeding when you find:

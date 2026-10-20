@@ -72,11 +72,13 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get install -y ripgrep
       - name: shellcheck the filter and the tests
-        run: shellcheck -x -S warning validation/validate.sh validation/test-module-lines.sh validation/test-test-module-lines.sh validation/test-validate.sh
+        run: shellcheck -x -S warning validation/validate.sh validation/test-module-lines.sh validation/test-test-module-lines.sh validation/test-validate.sh validation/test-one-test-binary.sh
       - name: test-module filter and validate.sh scans
         run: bash validation/test-test-module-lines.sh
       - name: validate.sh's own rules
         run: bash validation/test-validate.sh
+      - name: one integration-test binary per crate ([test_layout] one_binary)
+        run: bash validation/test-one-test-binary.sh
 
   # release-crate.yml and notify-release.yml are called at @main by every satellite's
   # release, so a broken expression or script here breaks thirteen releases at once.

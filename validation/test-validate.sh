@@ -200,6 +200,7 @@ temporary solution@*workaround*@No temporary solutions
 empty module@*'(fn |struct'*@No empty source modules
 ignored test@'#\[ignore'*--count@(No|All [0-9]+) ignored tests
 ignored-test allowlist@'#\[ignore'*-c@(No|All [0-9]+) ignored tests
+test environment-write@*_var*@One integration test binary per crate
 continue-on-error@*continue-on-error*@No continue-on-error
 skipped JS/TS test@*xdescribe*@No skipped JS/TS tests
 placeholder JS/TS test@*'infrastructure ready'*@No placeholder JS/TS test bodies

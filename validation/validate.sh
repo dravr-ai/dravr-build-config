@@ -560,6 +560,93 @@ print(' '.join(config.get('files', [])))
 fi
 
 # ============================================================================
+# One integration-test binary per crate (error if local config enforces it)
+# ============================================================================
+# Every top-level tests/*.rs is a binary of its own, each linked against the whole
+# dependency graph: dravr-platform's 793 of them took 84 GiB and a 13-minute suite, and
+# one binary takes ~415 MB and ~4 minutes. A crate's integration tests are the modules
+# of tests/it/main.rs. A top-level file is kept only for a suite that writes the process
+# environment, because the tests of one binary share one environment; for the same
+# reason nothing under tests/it/ may write it. A crate with `autotests = false` declares
+# its binaries as [[test]] entries, so its top-level files are not counted. A repo fails
+# on the layout by setting `one_binary = true` under [test_layout] in
+# validation-patterns.local.toml; otherwise the scan prints each crate's binary count.
+echo -e "${BLUE}Checking integration test binaries...${NC}"
+ONE_BINARY=$(grep -E "^[[:space:]]*one_binary[[:space:]]*=[[:space:]]*true" "$LOCAL_PATTERNS_FILE" 2>/dev/null | wc -l | tr -d ' ')
+# A call, not a mention: a doc comment naming the function writes nothing. The brackets
+# keep this line from matching itself.
+ENV_WRITE='\b(se[t]|remov[e])_var\s*\('
+TEST_CRATES="$SCAN_TMP/test-crates"
+BIN_PROBLEMS="$SCAN_TMP/bin-problems"
+: >"$BIN_PROBLEMS"
+{
+    if [ -d "$PROJECT_ROOT/tests" ]; then printf '%s\n' "$PROJECT_ROOT"; fi
+    for crate_dir in "$PROJECT_ROOT"/crates/*/; do
+        if [ -d "${crate_dir}tests" ]; then printf '%s\n' "${crate_dir%/}"; fi
+    done
+} >"$TEST_CRATES"
+BIN_SCANNED=true
+BIN_COUNTS=""
+while IFS= read -r crate; do
+    if [ "$crate" = "$PROJECT_ROOT" ]; then crate_label=$(basename "$PROJECT_ROOT"); else crate_label=${crate##*/}; fi
+    autotests_rc=1
+    if [ -f "$crate/Cargo.toml" ]; then
+        autotests_rc=0
+        grep -qE '^[[:space:]]*autotests[[:space:]]*=[[:space:]]*false' "$crate/Cargo.toml" || autotests_rc=$?
+        if [ "$autotests_rc" -gt 1 ]; then
+            fail_validation "could not read $crate_label/Cargo.toml — the test binary scan was not checked"
+            BIN_SCANNED=false
+            break
+        fi
+    fi
+    binaries=0
+    if [ "$autotests_rc" -eq 0 ]; then
+        binaries=$(awk '/^[[:space:]]*\[\[test\]\]/ { n++ } END { print n + 0 }' "$crate/Cargo.toml")
+    else
+        if ! find "$crate/tests" -maxdepth 1 -type f -name '*.rs' >"$SCAN_TMP/bin-top" 2>"$SCAN_TMP/bin-top.err"; then
+            fail_validation "could not list $crate_label/tests — the test binary scan was not checked"
+            sed 's/^/   /' "$SCAN_TMP/bin-top.err" | head -5
+            BIN_SCANNED=false
+            break
+        fi
+        while IFS= read -r top_file; do
+            binaries=$((binaries + 1))
+            if ! rg_capture "test environment-write" "$SCAN_TMP/bin-env" -l "$ENV_WRITE" "$top_file"; then
+                BIN_SCANNED=false
+                break 2
+            fi
+            if [ "$(count_lines "$SCAN_TMP/bin-env")" -eq 0 ]; then
+                echo "${top_file#"$PROJECT_ROOT"/}: a test binary of its own that writes no environment — make it a module of tests/it/main.rs" >>"$BIN_PROBLEMS"
+            fi
+        done < "$SCAN_TMP/bin-top"
+        if [ -f "$crate/tests/it/main.rs" ]; then binaries=$((binaries + 1)); fi
+    fi
+    if [ -d "$crate/tests/it" ]; then
+        if ! rg_capture "test environment-write" "$SCAN_TMP/bin-env-it" -l --glob '*.rs' "$ENV_WRITE" "$crate/tests/it"; then
+            BIN_SCANNED=false
+            break
+        fi
+        while IFS= read -r it_file; do
+            echo "${it_file#"$PROJECT_ROOT"/}: writes the process environment inside the shared tests/it binary — give it a top-level tests/<suite>.rs of its own" >>"$BIN_PROBLEMS"
+        done < "$SCAN_TMP/bin-env-it"
+    fi
+    BIN_COUNTS="$BIN_COUNTS $crate_label=$binaries"
+done < "$TEST_CRATES"
+if [ "$BIN_SCANNED" = true ] && [ -n "$BIN_COUNTS" ]; then
+    BIN_PROBLEM_COUNT=$(count_lines "$BIN_PROBLEMS")
+    if [ "${ONE_BINARY:-0}" -gt 0 ]; then
+        if [ "$BIN_PROBLEM_COUNT" -gt 0 ]; then
+            fail_validation "Found $BIN_PROBLEM_COUNT test file(s) outside one test binary per crate — suites are modules of tests/it/main.rs"
+            sed 's/^/   /' "$BIN_PROBLEMS" | head -20
+        else
+            pass_validation "One integration test binary per crate"
+        fi
+    else
+        echo "ℹ️  Integration test binaries per crate:$BIN_COUNTS (one per crate is enforced by [test_layout] one_binary = true)"
+    fi
+fi
+
+# ============================================================================
 # CI continue-on-error
 # ============================================================================
 if [ -d "$PROJECT_ROOT/.github/workflows" ]; then
