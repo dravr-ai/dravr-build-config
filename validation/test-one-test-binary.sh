@@ -130,13 +130,65 @@ else
   fail "the root package's tests/ was not scanned: $(plain | grep -E '❌|binar' || true)"
 fi
 
-# Off: the same stray layout passes and the scan counts each crate's binaries.
+# Cargo also makes a binary of tests/<dir>/main.rs; one that writes no environment is a
+# stray like a top-level file.
+root="$(repo dir-stray on)"
+it_binary "$root/crates/demo"
+put "$root/crates/demo/tests/live/main.rs" 'mod checks;'
+put "$root/crates/demo/tests/live/checks.rs" '#[test]
+fn live() {}'
+if [ "$(validate_exit "$root")" = "1" ] && plain | grep -q 'crates/demo/tests/live/main.rs: a test binary of its own'; then
+  pass "a tests/<dir>/main.rs binary that writes no environment fails and names the file"
+else
+  fail "a tests/<dir>/main.rs stray binary passed: $(plain | grep -E '❌|binar' || true)"
+fi
+
+# A directory suite whose environment write sits in one of its modules is kept.
+root="$(repo dir-env on)"
+it_binary "$root/crates/demo"
+put "$root/crates/demo/tests/live/main.rs" 'mod checks;'
+put "$root/crates/demo/tests/live/checks.rs" "#[test]
+fn writes() {
+    unsafe { $ENV_CALL }
+}"
+if [ "$(validate_exit "$root")" = "0" ] && plain | grep -q '✅ One integration test binary per crate'; then
+  pass "a tests/<dir>/main.rs suite that writes the environment in a module passes"
+else
+  fail "an environment-writing directory suite failed: $(plain | grep -E '❌|binar' || true)"
+fi
+
+# autotests = false exempts only the top-level files: a tests/it module writing the
+# environment still fails.
+root="$(repo no-autotests-env on)"
+it_binary "$root/crates/demo"
+put "$root/crates/demo/Cargo.toml" '[package]
+name = "demo"
+autotests = false
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"'
+put "$root/crates/demo/tests/it/env_test.rs" "#[test]
+fn writes() {
+    unsafe { $ENV_CALL }
+}"
+if [ "$(validate_exit "$root")" = "1" ] && plain | grep -q 'crates/demo/tests/it/env_test.rs: writes the process environment'; then
+  pass "an autotests = false crate still fails on an environment-writing tests/it module"
+else
+  fail "autotests = false exempted a tests/it environment write: $(plain | grep -E '❌|binar' || true)"
+fi
+
+# Off: the same stray layout passes and the scan counts each crate's binaries, a
+# tests/<dir>/main.rs among them; a module of a directory suite is not one.
 root="$(repo off off)"
 it_binary "$root/crates/demo"
 put "$root/crates/demo/tests/stray_test.rs" '#[test]
 fn stray() {}'
-if [ "$(validate_exit "$root")" = "0" ] && plain | grep -q 'Integration test binaries per crate: demo=2 '; then
-  pass "with the flag off a stray file passes and the scan counts 2 binaries"
+put "$root/crates/demo/tests/live/main.rs" 'mod checks;'
+put "$root/crates/demo/tests/live/checks.rs" '#[test]
+fn live() {}'
+if [ "$(validate_exit "$root")" = "0" ] && plain | grep -q 'Integration test binaries per crate: demo=3 '; then
+  pass "with the flag off a stray file passes and the scan counts 3 binaries"
 else
   fail "the opt-out count is wrong: $(plain | grep -E '❌|binar' || true)"
 fi

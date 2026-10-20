@@ -70,14 +70,14 @@ Don't mark code `// DEPRECATED` or `// TODO remove later`. Delete it. If deletio
 
 ## One Integration-Test Binary per Crate
 
-Every top-level `tests/*.rs` is a separate binary linked against the whole dependency graph:
-dravr-platform's 793 of them took 84 GiB and ~13 minutes; one binary per crate takes ~415 MB
-and ~4 minutes.
+Every top-level `tests/*.rs` and `tests/<dir>/main.rs` is a separate binary linked against the
+whole dependency graph: dravr-platform's 793 of them took 84 GiB and ~13 minutes (2026-10); one
+binary per crate takes ~415 MB and ~4 minutes.
 
 - A crate's integration tests are modules of `<crate>/tests/it/main.rs`, one module per suite
   (`mod billing_test;` → `tests/it/billing_test.rs`, nested directories allowed). Shared
   helpers are declared there too (`mod helpers;`), once, not re-included by every suite.
-- A top-level `tests/<suite>.rs` (its own binary) is allowed **only** for a suite that writes
+- A top-level `tests/<suite>.rs` or `tests/<suite>/main.rs` (its own binary) is allowed **only** for a suite that writes
   the process environment (`std::env::set_var` / `remove_var`): a binary's tests share one
   environment. For the same reason nothing under `tests/it/` writes it.
 - Explicit `[[test]]` targets under a subdirectory (e.g. `tests/live/` behind

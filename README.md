@@ -353,10 +353,10 @@ through `.build/validation/test-module-lines.sh`. `validation/test-test-module-l
 ### One integration-test binary per crate
 
 `validate.sh` checks the layout `docs/AGENTS_DISCIPLINE.md` sets out: a crate's integration
-tests are modules of `tests/it/main.rs`, and a top-level `tests/*.rs` (a binary of its own) is
-kept only for a suite that writes the process environment. Every crate with a `tests/`
-directory is checked: the root package and each `crates/*`. With the switch on, a top-level
-`tests/*.rs` that never calls `set_var`/`remove_var` fails, and so does any file under
+tests are modules of `tests/it/main.rs`, and a top-level `tests/*.rs` or `tests/<dir>/main.rs`
+(a binary of its own) is kept only for a suite that writes the process environment. Every
+crate with a `tests/` directory is checked: the root package and each `crates/*`. With the
+switch on, such a binary that never calls `set_var`/`remove_var` fails, and so does any file under
 `tests/it/` that calls either; a crate whose `Cargo.toml` sets `autotests = false` declares its
 binaries as `[[test]]` entries, so only its `tests/it/` is checked. With the switch off the
 scan prints one line counting each crate's test binaries. An rg that cannot search fails the

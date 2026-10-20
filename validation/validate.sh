@@ -562,19 +562,20 @@ fi
 # ============================================================================
 # One integration-test binary per crate (error if local config enforces it)
 # ============================================================================
-# Every top-level tests/*.rs is a binary of its own, each linked against the whole
-# dependency graph: dravr-platform's 793 of them took 84 GiB and a 13-minute suite, and
-# one binary takes ~415 MB and ~4 minutes. A crate's integration tests are the modules
-# of tests/it/main.rs. A top-level file is kept only for a suite that writes the process
-# environment, because the tests of one binary share one environment; for the same
-# reason nothing under tests/it/ may write it. A crate with `autotests = false` declares
-# its binaries as [[test]] entries, so its top-level files are not counted. A repo fails
-# on the layout by setting `one_binary = true` under [test_layout] in
-# validation-patterns.local.toml; otherwise the scan prints each crate's binary count.
+# Every top-level tests/*.rs and tests/<dir>/main.rs is a binary of its own, each linked
+# against the whole dependency graph: dravr-platform's 793 of them took 84 GiB and a
+# 13-minute suite (2026-10), and one binary takes ~415 MB and ~4 minutes. A crate's
+# integration tests are the modules of tests/it/main.rs. A binary of its own is kept
+# only for a suite that writes the process environment, because the tests of one binary
+# share one environment; for the same reason nothing under tests/it/ may write it. A
+# crate with `autotests = false` declares its binaries as [[test]] entries, so its
+# top-level files are not counted. A repo fails on the layout by setting
+# `one_binary = true` under [test_layout] in validation-patterns.local.toml; otherwise
+# the scan prints each crate's binary count.
 echo -e "${BLUE}Checking integration test binaries...${NC}"
 ONE_BINARY=$(grep -E "^[[:space:]]*one_binary[[:space:]]*=[[:space:]]*true" "$LOCAL_PATTERNS_FILE" 2>/dev/null | wc -l | tr -d ' ')
 # A call, not a mention: a doc comment naming the function writes nothing. The brackets
-# keep this line from matching itself.
+# keep this file free of the literal call, so a scan of .build itself never counts it.
 ENV_WRITE='\b(se[t]|remov[e])_var\s*\('
 TEST_CRATES="$SCAN_TMP/test-crates"
 BIN_PROBLEMS="$SCAN_TMP/bin-problems"
@@ -603,23 +604,30 @@ while IFS= read -r crate; do
     if [ "$autotests_rc" -eq 0 ]; then
         binaries=$(awk '/^[[:space:]]*\[\[test\]\]/ { n++ } END { print n + 0 }' "$crate/Cargo.toml")
     else
-        if ! find "$crate/tests" -maxdepth 1 -type f -name '*.rs' >"$SCAN_TMP/bin-top" 2>"$SCAN_TMP/bin-top.err"; then
+        if ! find "$crate/tests" -maxdepth 2 -type f -name '*.rs' >"$SCAN_TMP/bin-top" 2>"$SCAN_TMP/bin-top.err"; then
             fail_validation "could not list $crate_label/tests — the test binary scan was not checked"
             sed 's/^/   /' "$SCAN_TMP/bin-top.err" | head -5
             BIN_SCANNED=false
             break
         fi
-        while IFS= read -r top_file; do
+        # Cargo makes a binary of every tests/*.rs and every tests/<dir>/main.rs; a
+        # directory suite's environment write can sit in any of its modules.
+        while IFS= read -r bin_file; do
+            env_scan=(-l "$ENV_WRITE" "$bin_file")
+            case "${bin_file#"$crate/tests/"}" in
+                it/main.rs) binaries=$((binaries + 1)); continue ;;
+                */main.rs) env_scan=(-l --glob '*.rs' "$ENV_WRITE" "${bin_file%/main.rs}") ;;
+                */*) continue ;;
+            esac
             binaries=$((binaries + 1))
-            if ! rg_capture "test environment-write" "$SCAN_TMP/bin-env" -l "$ENV_WRITE" "$top_file"; then
+            if ! rg_capture "test environment-write" "$SCAN_TMP/bin-env" "${env_scan[@]}"; then
                 BIN_SCANNED=false
                 break 2
             fi
             if [ "$(count_lines "$SCAN_TMP/bin-env")" -eq 0 ]; then
-                echo "${top_file#"$PROJECT_ROOT"/}: a test binary of its own that writes no environment — make it a module of tests/it/main.rs" >>"$BIN_PROBLEMS"
+                echo "${bin_file#"$PROJECT_ROOT"/}: a test binary of its own that writes no environment — make it a module of tests/it/main.rs" >>"$BIN_PROBLEMS"
             fi
         done < "$SCAN_TMP/bin-top"
-        if [ -f "$crate/tests/it/main.rs" ]; then binaries=$((binaries + 1)); fi
     fi
     if [ -d "$crate/tests/it" ]; then
         if ! rg_capture "test environment-write" "$SCAN_TMP/bin-env-it" -l --glob '*.rs' "$ENV_WRITE" "$crate/tests/it"; then
