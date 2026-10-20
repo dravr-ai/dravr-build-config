@@ -220,6 +220,49 @@ else
   fail "a forbidden clippy allow passed: $(plain | grep -E 'clippy' || true)"
 fi
 
+# rustfmt wraps a long allow over several lines; the single-line match read it as no
+# allow at all (carnet#1094). Each wrapped attribute is one finding, named by its file.
+repo="$(fixture clippy-allow-wrapped <<'EOF'
+#[allow(
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
+pub fn f() -> u32 {
+    0
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn g() -> u32 {
+    0
+}
+EOF
+)"
+if [ "$(validate_exit "$repo")" = "1" ] && plain | grep -q 'Found 2 unauthorized #\[allow(clippy::)\]' && plain | grep -q 'crates/demo/src/lib.rs:1:'; then
+  pass "a wrapped forbidden clippy allow fails, counting each lint, and names the file"
+else
+  fail "a wrapped forbidden clippy allow passed: $(plain | grep -E 'clippy' || true)"
+fi
+
+repo="$(fixture dead-code-wrapped <<'EOF'
+#[allow(
+    clippy::too_many_lines,
+    dead_code
+)]
+pub fn f() -> u32 {
+    0
+}
+EOF
+)"
+if [ "$(validate_exit "$repo")" = "1" ] && plain | grep -q 'Found 1 #\[allow(dead_code)\]'; then
+  pass "a wrapped dead_code allow fails"
+else
+  fail "a wrapped dead_code allow passed: $(plain | grep -E 'dead' || true)"
+fi
+
 # A crate with no tests/ directory: the unmatched crates/*/tests/ glob is not handed to
 # rg as a literal path, which rg would now report as a failed search. The test scans are
 # skipped, as for a repo with no tests at all; they used to print a pass over that crash.

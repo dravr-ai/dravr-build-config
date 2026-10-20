@@ -2,6 +2,12 @@
 # Source: dravr-build-config/cargo/clippy.toml
 cognitive-complexity-threshold = 25
 
+# Tests may unwrap, expect and panic: a failing test is the report. Without these, a
+# test module needs #[allow(clippy::unwrap_used, ...)], which validate.sh forbids.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
 # Banned methods (anyhow context methods — use structured error types)
 [[disallowed-methods]]
 path = "anyhow::Context::context"

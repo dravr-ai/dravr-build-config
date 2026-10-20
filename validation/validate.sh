@@ -359,9 +359,16 @@ fi
 
 # -o prints each whole attribute, after its path and line: matching only `#[allow(`
 # printed that prefix alone, so no lint name ever reached the allowlist and the scan
-# could not fail (carnet#1093).
+# could not fail (carnet#1093). -U lets one match span the lines of an attribute that
+# rustfmt wrapped, which rg prints one prefixed line each; they are joined back into one
+# line per attribute, or a wrapped allow read as no allow at all (carnet#1094).
 # shellcheck disable=SC2086
-if rg_capture "clippy allow" "$SCAN_TMP/clippy-allows" "#\[allow\([^)]*\)\]" $SRC_PATHS -g "!*/bin/*" -o -n --with-filename; then
+if rg_capture "clippy allow" "$SCAN_TMP/clippy-allows.raw" "#\[allow\([^)]*\)\]" $SRC_PATHS -g "!*/bin/*" -U -o -n --with-filename; then
+    awk '{
+        line = $0; text = line; sub(/^[^:]*:[0-9]+:/, "", text)
+        if (text ~ /^#\[allow\(/) { if (rec != "") print rec; rec = line }
+        else { gsub(/^[[:space:]]+/, " ", text); rec = rec text }
+    } END { if (rec != "") print rec }' "$SCAN_TMP/clippy-allows.raw" >"$SCAN_TMP/clippy-allows"
     CLIPPY_ALLOWS=$(sed -E 's/^.*#\[allow\(//; s/\)\].*$//' "$SCAN_TMP/clippy-allows" \
         | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
         | grep '^clippy::' \
@@ -385,15 +392,16 @@ fi
 
 # ============================================================================
 # Dead code annotations
-# Catches combined-form `#[allow(dead_code, clippy::xxx)]` as well as the bare form.
+# Catches combined-form `#[allow(dead_code, clippy::xxx)]` as well as the bare form, on
+# one line or wrapped over several (-U).
 # ============================================================================
 echo -e "${BLUE}Checking for dead code hiding...${NC}"
 # shellcheck disable=SC2086
-if rg_capture "dead code" "$SCAN_TMP/dead-code" "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS --count; then
+if rg_capture "dead code" "$SCAN_TMP/dead-code" "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS -U --count-matches; then
     DEAD_CODE=$(sum_counts "$SCAN_TMP/dead-code")
     if [ "$DEAD_CODE" -gt 0 ]; then
         fail_validation "Found $DEAD_CODE #[allow(dead_code)] — remove the dead code instead"
-        rg "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS -n 2>/dev/null | head -5
+        rg -U "#\[allow\([^)]*\bdead_code\b" $SRC_PATHS -n 2>/dev/null | head -5
     else
         pass_validation "No dead code annotations"
     fi
