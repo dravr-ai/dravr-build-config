@@ -12,6 +12,7 @@ bash .build/ci/bootstrap-repo.sh   # hooks, submodule auto-sync, shared skills
 # Symlink configs
 ln -sf .build/cargo/clippy.toml clippy.toml
 ln -sf .build/cargo/rustfmt.toml rustfmt.toml
+cp .build/cargo/rust-toolchain.toml rust-toolchain.toml   # a copy, never a symlink (see Rust toolchain pin)
 
 # Run validation
 .build/validation/validate.sh
@@ -22,7 +23,7 @@ ln -sf .build/cargo/rustfmt.toml rustfmt.toml
 
 ## Structure
 
-- `cargo/` — Canonical Cargo lint config, clippy.toml, rustfmt.toml, deny.toml
+- `cargo/` — Canonical Cargo lint config, clippy.toml, rustfmt.toml, deny.toml, and `rust-toolchain.toml`, the fleet's one Rust pin
 - `validation/` — Architectural validation script (`validate.sh`, which holds the rules themselves), `test-module-lines.sh`
   (the unit-test filter its scans share, see Extending), and
   `satellite-pre-push-validate.sh`, the pre-push gate every satellite runs (see below)
@@ -167,6 +168,34 @@ only when its `.build` pointer moves to a commit that has it.
 marker is deleted first, so only a run that passed every tier leaves one.
 `validation/test-satellite-pre-push-validate.sh` makes every tier fire on a throwaway crate and
 proves the hook admits the marker.
+
+## Rust toolchain pin
+
+The fleet builds with one Rust: the `channel` in `cargo/rust-toolchain.toml`. Every Rust repo
+keeps its own copies of it, and `validation/validate.sh` fails a repo where any copy differs:
+
+| Copy | Must be |
+|---|---|
+| `rust-toolchain.toml` (required) | `channel` = the pin |
+| `dtolnay/rust-toolchain@<ref>` anywhere under `.github/` (workflows and composite actions) | `@<pin>`; `@stable`, `@master`, `@nightly` float |
+| a `toolchain:` input, `rustup default/install <x>`, `cargo +<x>` under `.github/` | the pin |
+| `FROM rust:<tag>` in any Dockerfile | `<major.minor>-…` or `<pin>-…` of the pin; `rust:1`, `latest`, `slim` float |
+| `rust-version` in a `Cargo.toml` | not newer than the pin |
+
+The repo file is a copy, not a symlink: rustup reads it before `.build` is checked out, and a
+symlink into a missing submodule dangles without an error. Because the check lives in
+`validate.sh`, it runs in the pre-push hook (a Dockerfile, `.github/actions/` or bare `.build`
+change triggers it) and in every consumer's CI.
+
+**Bumping the pin:**
+1. Here: change `channel` in `cargo/rust-toolchain.toml` and the `dtolnay/rust-toolchain@` refs
+   in `.github/workflows/` (`test-validate.sh` fails until they match). Land it.
+2. In each repo, one commit: move `.build`, then update every copy the check names. Run
+   `.build/validation/validate.sh` to list them; it passes when none is left. Fix the new
+   clippy lints the release brings in the same commit.
+
+The repo that is not bumped stays green on its old `.build` until its next `.build` move, which
+names every stale copy.
 
 ## No AI attribution
 

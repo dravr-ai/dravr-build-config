@@ -235,11 +235,12 @@ RUST_CHANGE_RE='\.rs$|(^|/)Cargo\.(toml|lock)$|(^|/)(clippy|rustfmt|rust-toolcha
 # themselves, so nothing double-runs.
 #
 # This sits BEFORE the Rust-only exit below on purpose: validate.sh reads more than
-# Rust (.github/workflows/, JS/TS test files, the register config), so a
-# workflow-only push still needs it. The regex over-matches by design; a needless
-# half-second beats a missed violation.
+# Rust (.github/workflows/ and actions/, JS/TS test files, the register config, the
+# Rust toolchain pin's copies in Dockerfiles), so a workflow-only push still needs it,
+# and so does a bare .build bump: that is how a new fleet pin reaches a repo. The regex
+# over-matches by design; a needless half-second beats a missed violation.
 ARCH_VALIDATE="$PROJECT_ROOT/.build/validation/validate.sh"
-VALIDATION_CHANGE_RE="$RUST_CHANGE_RE"'|^\.github/workflows/|(^|/)(validation-patterns\.local|ignored-tests-allowlist|registre)\.toml$|(^|/)feature-phases\.ya?ml$|\.(test|spec)\.[jt]sx?$'
+VALIDATION_CHANGE_RE="$RUST_CHANGE_RE"'|^\.github/(workflows|actions)/|(^|/)[^/]*[Dd]ockerfile[^/]*$|^\.build$|(^|/)(validation-patterns\.local|ignored-tests-allowlist|registre)\.toml$|(^|/)feature-phases\.ya?ml$|\.(test|spec)\.[jt]sx?$'
 
 if [ ! -f "$ARCH_VALIDATE" ]; then
     echo "Pre-push: .build/validation/validate.sh missing — run: git submodule update --init --recursive"

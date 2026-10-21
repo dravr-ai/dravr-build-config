@@ -74,6 +74,25 @@ check "a failure blocks the push" 1 "$RC"
 says "and replays the full output" "$OUT" "Found 1 problematic .unwrap() calls"
 says "with the block line" "$OUT" "BLOCKED: Architectural validation failed"
 
+# The Rust toolchain pin has copies outside .rs and workflows (carnet#1124): a push that
+# moves only a Dockerfile's FROM rust: tag or a composite action's pin runs the tier too.
+push_file() { # <path> — commits one change to <path> and pushes it through a failing stub
+    # From the remote's tip: the blocked pushes above left workflow commits unpushed,
+    # and a push carrying them would run the tier whatever this change is.
+    git reset -q --hard origin/main
+    printf '❌ Found 1 Rust toolchain pin(s) that are not the fleet pin\n' > .build/validation/stub-out
+    printf '1\n' > .build/validation/stub-rc
+    n=$((n + 1))
+    mkdir -p "$(dirname "$1")" && printf '# change %s\n' "$n" >> "$1"
+    git add "$1" && git -c core.hooksPath="$TMP/none" commit -qm "build: change $n"
+    OUT=$(git -c core.hooksPath="$HOOKS" push origin main 2>&1); RC=$?
+}
+push_file docker/server/Dockerfile
+check "a Dockerfile-only push runs the shared tier" 1 "$RC"
+says "and blocks on its failure" "$OUT" "not the fleet pin"
+push_file .github/actions/rust-setup/action.yml
+check "a composite-action-only push runs the shared tier" 1 "$RC"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

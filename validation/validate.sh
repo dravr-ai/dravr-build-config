@@ -588,6 +588,158 @@ if [ -d "$PROJECT_ROOT/.github/workflows" ]; then
 fi
 
 # ============================================================================
+# Rust toolchain pin (carnet#1124)
+# ============================================================================
+# The fleet builds with one Rust: the channel in cargo/rust-toolchain.toml beside this
+# script. Every copy a repo carries must name it — its rust-toolchain.toml, each
+# dtolnay/rust-toolchain ref and toolchain: input under .github/ (actions included: the
+# 1.96 bump missed a composite action's own pin), each Dockerfile's FROM rust: tag —
+# and no Cargo rust-version may ask for a newer one. A bump that misses a repo, or a
+# site in one, fails here instead of drifting: dravr-browser sat on 1.98.1 and dravr-owl
+# on 1.96.0 after the 1.99.1 bump.
+echo -e "${BLUE}Checking the Rust toolchain pin...${NC}"
+RUST_PIN_FILE="$SCRIPT_DIR/../cargo/rust-toolchain.toml"
+toolchain_channel() {
+    sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
+}
+# version_gt <a> <b>: true when dotted version a is newer than b.
+version_gt() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        na = split(a, x, "."); nb = split(b, y, ".")
+        for (i = 1; i <= 3; i++) { if ((x[i] + 0) > (y[i] + 0)) exit 0; if ((x[i] + 0) < (y[i] + 0)) exit 1 }
+        exit 1
+    }'
+}
+RUST_PIN=""
+[ -f "$RUST_PIN_FILE" ] && RUST_PIN=$(toolchain_channel "$RUST_PIN_FILE")
+if ! printf '%s\n' "$RUST_PIN" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    fail_validation "cannot read the fleet Rust pin from $RUST_PIN_FILE — the toolchain pin was not checked"
+else
+    RUST_PIN_MINOR=${RUST_PIN%.*}
+    PIN_DRIFT="$SCAN_TMP/pin-drift"
+    : > "$PIN_DRIFT"
+    PIN_CHECKED=true
+
+    if [ -f rust-toolchain.toml ]; then
+        REPO_CHANNEL=$(toolchain_channel rust-toolchain.toml)
+        [ "$REPO_CHANNEL" = "$RUST_PIN" ] || echo "rust-toolchain.toml: channel = \"${REPO_CHANNEL:-<none>}\"" >> "$PIN_DRIFT"
+    elif [ -f rust-toolchain ]; then
+        echo "rust-toolchain: the legacy file name — replace it with a copy of .build/cargo/rust-toolchain.toml" >> "$PIN_DRIFT"
+    else
+        echo "rust-toolchain.toml: missing — copy .build/cargo/rust-toolchain.toml" >> "$PIN_DRIFT"
+    fi
+
+    if [ -d .github ]; then
+        # Every dtolnay/rust-toolchain ref names the pin itself; @stable, @master and
+        # @nightly float, and a toolchain: input beside @master is one more copy.
+        if rg_capture "rust-toolchain action" "$SCAN_TMP/pin-actions" -n --no-heading -g '*.yml' -g '*.yaml' \
+            'dtolnay/rust-toolchain@[^[:space:]"'"'"'#]+' .github; then
+            awk -v pin="$RUST_PIN" '{
+                if (!match($0, /^[^:]*:[0-9]+:/)) next
+                loc = substr($0, 1, RLENGTH); line = substr($0, RLENGTH + 1)
+                if (line ~ /^[[:space:]]*#/) next
+                match(line, /dtolnay\/rust-toolchain@[^[:space:]"\047#]+/)
+                use = substr(line, RSTART, RLENGTH); ref = use; sub(/.*@/, "", ref)
+                if (ref != pin) print loc use
+            }' "$SCAN_TMP/pin-actions" >> "$PIN_DRIFT"
+        else
+            PIN_CHECKED=false
+        fi
+        if rg_capture "toolchain input" "$SCAN_TMP/pin-inputs" -n --no-heading -g '*.yml' -g '*.yaml' \
+            '^[[:space:]]*(-[[:space:]]+)?toolchain:[[:space:]]*[^[:space:]#]' .github; then
+            awk -v pin="$RUST_PIN" '{
+                v = $0; sub(/^[^:]*:[0-9]+:[[:space:]]*(-[[:space:]]+)?toolchain:[[:space:]]*/, "", v)
+                sub(/[[:space:]]*(#.*)?$/, "", v); gsub(/["'"'"']/, "", v)
+                if (v != pin) print
+            }' "$SCAN_TMP/pin-inputs" >> "$PIN_DRIFT"
+        else
+            PIN_CHECKED=false
+        fi
+        # rustup or cargo +<toolchain> in a workflow step picks a toolchain past every pin above.
+        if rg_capture "rustup toolchain" "$SCAN_TMP/pin-rustup" -n --no-heading -g '*.yml' -g '*.yaml' \
+            -e 'rustup[[:space:]]+(toolchain[[:space:]]+install|install|default|override[[:space:]]+set)([[:space:]]|$)' \
+            -e 'cargo[[:space:]]+\+[^[:space:]]+' .github; then
+            # Each use on the line is judged by the toolchain word it names, never by the
+            # line's last word or its first "+": options after the toolchain and an
+            # unrelated "a+b" would otherwise read as drift.
+            awk -v pin="$RUST_PIN" '
+            # toolchain_word <word>: the word cut at the first shell separator, so
+            # "1.99.1&&echo" and "1.99.1;" read as 1.99.1.
+            function toolchain_word(v) {
+                sub(/^\+/, "", v); sub(/[;&|)"\047].*$/, "", v)
+                return v
+            }
+            {
+                line = $0; sub(/^[^:]*:[0-9]+:/, "", line)
+                if (line ~ /^[[:space:]]*#/) next
+                bad = 0
+                n = split(line, w, /[[:space:]]+/)
+                for (i = 1; i <= n; i++) {
+                    # cargo +<toolchain>
+                    if (w[i] ~ /(^|[;&|(])cargo$/ && i < n && w[i + 1] ~ /^\+/) {
+                        if (toolchain_word(w[i + 1]) != pin) bad = 1
+                        continue
+                    }
+                    if (w[i] !~ /(^|[;&|(])rustup$/) continue
+                    j = i + 1
+                    if (w[j] == "toolchain" && w[j + 1] == "install") j += 2
+                    else if (w[j] == "override" && w[j + 1] == "set") j += 2
+                    else if (w[j] == "install" || w[j] == "default") j += 1
+                    else continue
+                    # Options may come before the toolchain; those that take a value skip it.
+                    while (j <= n && w[j] ~ /^-/) {
+                        if (w[j] ~ /^(--profile|--component|-c|--target|-t)$/) j += 2
+                        else j += 1
+                    }
+                    if (j <= n && toolchain_word(w[j]) != pin) bad = 1
+                }
+                if (bad) print
+            }' "$SCAN_TMP/pin-rustup" >> "$PIN_DRIFT"
+        else
+            PIN_CHECKED=false
+        fi
+    fi
+
+    # Docker tags name a minor (rust:1.99-bookworm) or a full version (rust:1.99.1-slim);
+    # either must be the pin's. A bare rust:1, rust:latest or rust:slim floats.
+    if rg_capture "Dockerfile base image" "$SCAN_TMP/pin-docker" -n --no-heading -i \
+        --hidden -g '!.git/' -g '!.build/' -g '!.claude/' --iglob '*dockerfile*' \
+        '^[[:space:]]*FROM[[:space:]]+(--platform=[^[:space:]]+[[:space:]]+)?([^[:space:]/]+/)?(library/)?rust(:[^[:space:]]+)?([[:space:]]|$)' .; then
+        awk -v pin="$RUST_PIN" -v minor="$RUST_PIN_MINOR" '{
+            line = $0; sub(/^[^:]*:[0-9]+:/, "", line)
+            if (!match(line, /rust(:[^[:space:]]+)?([[:space:]]|$)/)) next
+            img = substr(line, RSTART, RLENGTH); sub(/[[:space:]]+$/, "", img)
+            tag = img; if (sub(/^rust:/, "", tag) == 0) tag = ""
+            sub(/@.*/, "", tag)
+            ok = (tag == minor || tag == pin || index(tag, minor "-") == 1 || index(tag, pin "-") == 1)
+            if (!ok) print
+        }' "$SCAN_TMP/pin-docker" >> "$PIN_DRIFT"
+    else
+        PIN_CHECKED=false
+    fi
+
+    if rg_capture "Cargo rust-version" "$SCAN_TMP/pin-msrv" -n --no-heading -g 'Cargo.toml' \
+        '^[[:space:]]*rust-version[[:space:]]*=[[:space:]]*"[^"]+"' .; then
+        while IFS= read -r msrv_line; do
+            msrv=$(printf '%s\n' "$msrv_line" | sed 's/.*rust-version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/')
+            if version_gt "$msrv" "$RUST_PIN"; then
+                echo "$msrv_line (needs a newer Rust than the pin)" >> "$PIN_DRIFT"
+            fi
+        done < "$SCAN_TMP/pin-msrv"
+    else
+        PIN_CHECKED=false
+    fi
+
+    PIN_DRIFT_COUNT=$(count_lines "$PIN_DRIFT")
+    if [ "$PIN_DRIFT_COUNT" -gt 0 ]; then
+        fail_validation "Found $PIN_DRIFT_COUNT Rust toolchain pin(s) that are not the fleet pin $RUST_PIN (.build/cargo/rust-toolchain.toml)"
+        sed 's/^/   /' "$PIN_DRIFT"
+    elif [ "$PIN_CHECKED" = true ]; then
+        pass_validation "Rust toolchain pinned to $RUST_PIN everywhere"
+    fi
+fi
+
+# ============================================================================
 # JS/TS test integrity (if frontend exists)
 # ============================================================================
 FRONTEND_PATHS=""

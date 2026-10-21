@@ -1,0 +1,14 @@
+# The fleet's Rust toolchain: the one pin every dravr-* Rust repo builds with.
+# Source: dravr-build-config/cargo/rust-toolchain.toml
+#
+# Each repo keeps a real rust-toolchain.toml (rustup reads it before any submodule is
+# checked out, so a symlink here would dangle in a fresh clone). validation/validate.sh
+# fails a repo whose copies drift from this channel: its rust-toolchain.toml, every
+# dtolnay/rust-toolchain ref and toolchain: input under .github/, each Dockerfile's
+# FROM rust: tag, and any Cargo rust-version above it.
+#
+# A bump: change channel here, land it, then move each repo's .build and its copies
+# together. The README's "Rust toolchain pin" section lists the steps.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]

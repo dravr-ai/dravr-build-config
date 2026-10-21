@@ -34,7 +34,8 @@ REPO="$TMP/sat"
 mkdir -p "$REPO/src" "$REPO/tests" "$REPO/scripts/ci"
 cd "$REPO" || exit 1
 git init -q .
-printf '[toolchain]\nchannel = "1.99.1"\ncomponents = ["clippy", "rustfmt"]\n' > rust-toolchain.toml
+# The fleet pin itself, so the fixture builds with what every satellite builds with.
+cp "$HERE/../cargo/rust-toolchain.toml" rust-toolchain.toml
 cat > Cargo.toml <<'EOF'
 [package]
 name = "fixture"

@@ -16,10 +16,15 @@ passes=0
 pass() { echo "  ✅ $1"; passes=$((passes + 1)); }
 fail() { echo "  ❌ $1"; failures=$((failures + 1)); }
 
+# The fleet pin validate.sh compares every repo against; each fixture carries a copy.
+PIN_FILE="$(dirname "$VALIDATE")/../cargo/rust-toolchain.toml"
+PIN=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$PIN_FILE")
+
 # fixture <name> — stdin is crates/demo/src/lib.rs; prints the repo root
 fixture() {
   mkdir -p "$WORK/$1/crates/demo/src"
   cat >"$WORK/$1/crates/demo/src/lib.rs"
+  cp "$PIN_FILE" "$WORK/$1/rust-toolchain.toml"
   printf '%s\n' "$WORK/$1"
 }
 # validate_exit <root> — runs $VALIDATE there, output in $WORK/out
@@ -201,6 +206,11 @@ empty module@*'(fn |struct'*@No empty source modules
 ignored test@'#\[ignore'*--count@(No|All [0-9]+) ignored tests
 ignored-test allowlist@'#\[ignore'*-c@(No|All [0-9]+) ignored tests
 continue-on-error@*continue-on-error*@No continue-on-error
+rust-toolchain action@*dtolnay/rust-toolchain*@Rust toolchain pinned
+toolchain input@*'toolchain:'*@Rust toolchain pinned
+rustup toolchain@*rustup*@Rust toolchain pinned
+Dockerfile base image@*FROM*@Rust toolchain pinned
+Cargo rust-version@*rust-version*@Rust toolchain pinned
 skipped JS/TS test@*xdescribe*@No skipped JS/TS tests
 placeholder JS/TS test@*'infrastructure ready'*@No placeholder JS/TS test bodies
 EOF
@@ -297,6 +307,132 @@ if [ "$(validate_exit "$repo")" = "1" ] && plain | grep -q 'underscore-prefixed 
   pass "production code after a misplaced test module still fails, naming the file and line"
 else
   fail "code after a misplaced test module was hidden: $(plain | grep -E '❌|✅ No (production|underscore)' || true)"
+fi
+
+
+# carnet#1124: one Rust pin for the fleet. Each kind of copy a repo carries fails on its
+# own when it names another toolchain, and names the file and line.
+if [ -n "$PIN" ]; then pass "the fleet pin reads as $PIN"; else fail "could not read the fleet pin from $PIN_FILE"; fi
+pin_fixture() { fixture "$1" <<'EOF'
+pub fn double(n: u32) -> u32 {
+    n * 2
+}
+EOF
+}
+# pin_case <name> <expected exit> <text the output must hold> — the fixture is in $repo
+pin_case() {
+  if [ "$(validate_exit "$repo")" = "$2" ] && plain | grep -qF -- "$3"; then
+    pass "$1"
+  else
+    fail "$1: $(plain | grep -A8 'Rust toolchain pin' | grep -E '❌|✅|^   ' || true)"
+  fi
+}
+
+repo="$(pin_fixture pin-all-sites)"
+mkdir -p "$repo/.github/workflows" "$repo/.github/actions/rust-setup" "$repo/docker"
+cat >"$repo/.github/workflows/ci.yml" <<EOF
+jobs:
+  a:
+    steps:
+      - uses: dtolnay/rust-toolchain@$PIN
+        with:
+          toolchain: "$PIN"
+      # - uses: dtolnay/rust-toolchain@stable  (a comment that names no step)
+      - run: rustup toolchain install $PIN && cargo +$PIN fmt
+      # options after the toolchain, and a "+" that is not cargo's, name no other toolchain
+      - run: rustup toolchain install $PIN --profile minimal --component clippy
+      - run: rustup default $PIN && echo "a+b"
+EOF
+printf 'runs:\n  steps:\n    - uses: dtolnay/rust-toolchain@%s\n' "$PIN" >"$repo/.github/actions/rust-setup/action.yml"
+printf 'FROM --platform=linux/amd64 rust:%s-slim AS chef\nFROM rust:%s-bookworm\nFROM debian:bookworm-slim\n' "${PIN%.*}" "$PIN" >"$repo/docker/Dockerfile"
+printf '[package]\nname = "demo"\nrust-version = "1.80"\n' >"$repo/crates/demo/Cargo.toml"
+pin_case "every site naming the pin passes" 0 "Rust toolchain pinned to $PIN everywhere"
+
+repo="$(pin_fixture pin-toolchain-file)"
+printf '[toolchain]\nchannel = "1.96.0"\n' >"$repo/rust-toolchain.toml"
+pin_case "a rust-toolchain.toml on another channel fails" 1 'rust-toolchain.toml: channel = "1.96.0"'
+
+repo="$(pin_fixture pin-missing-file)"
+rm "$repo/rust-toolchain.toml"
+pin_case "a repo with no rust-toolchain.toml fails" 1 "rust-toolchain.toml: missing"
+
+repo="$(pin_fixture pin-workflow)"
+mkdir -p "$repo/.github/workflows"
+printf 'jobs:\n  a:\n    steps:\n      - uses: dtolnay/rust-toolchain@1.98.1\n' >"$repo/.github/workflows/ci.yml"
+pin_case "a workflow on an older toolchain fails and names the line" 1 ".github/workflows/ci.yml:4:dtolnay/rust-toolchain@1.98.1"
+
+repo="$(pin_fixture pin-composite-action)"
+mkdir -p "$repo/.github/actions/rust-setup"
+printf 'runs:\n  steps:\n    - uses: dtolnay/rust-toolchain@1.94.0\n' >"$repo/.github/actions/rust-setup/action.yml"
+pin_case "a composite action's own pin fails" 1 ".github/actions/rust-setup/action.yml:3:"
+
+repo="$(pin_fixture pin-floating)"
+mkdir -p "$repo/.github/workflows"
+printf 'jobs:\n  a:\n    steps:\n      - uses: dtolnay/rust-toolchain@master\n        with:\n          toolchain: stable\n' >"$repo/.github/workflows/ci.yml"
+pin_case "a floating @master ref fails" 1 "dtolnay/rust-toolchain@master"
+pin_case "a toolchain: stable input fails" 1 ".github/workflows/ci.yml:6:"
+
+repo="$(pin_fixture pin-rustup)"
+mkdir -p "$repo/.github/workflows"
+printf 'jobs:\n  a:\n    steps:\n      - run: rustup default nightly\n      - run: cargo +nightly udeps\n      - run: echo a+b && rustup toolchain install beta --profile minimal\n' >"$repo/.github/workflows/ci.yml"
+pin_case "rustup default <other> in a step fails" 1 ".github/workflows/ci.yml:4:"
+pin_case "cargo +<other> in a step fails" 1 ".github/workflows/ci.yml:5:"
+pin_case "rustup toolchain install <other> followed by options fails" 1 ".github/workflows/ci.yml:6:"
+
+repo="$(pin_fixture pin-rustup-options)"
+mkdir -p "$repo/.github/workflows"
+printf 'jobs:\n  a:\n    steps:\n      - run: rustup toolchain install --profile minimal -c clippy 1.98.1\n' >"$repo/.github/workflows/ci.yml"
+pin_case "a toolchain named after rustup options still fails" 1 ".github/workflows/ci.yml:4:"
+
+repo="$(pin_fixture pin-rustup-joined)"
+mkdir -p "$repo/.github/workflows"
+printf 'jobs:\n  a:\n    steps:\n      - run: rustup default %s&&cargo +%s; echo done\n' "$PIN" "$PIN" >"$repo/.github/workflows/ci.yml"
+pin_case "the pin joined to && or ; still passes" 0 "Rust toolchain pinned to $PIN everywhere"
+
+repo="$(pin_fixture pin-docker-hidden)"
+mkdir -p "$repo/.devcontainer"
+printf 'FROM rust:1.98-bookworm\n' >"$repo/.devcontainer/dev.dockerfile"
+pin_case "a dockerfile in a hidden directory is scanned" 1 ".devcontainer/dev.dockerfile:1:"
+
+repo="$(pin_fixture pin-docker-minor)"
+printf 'FROM rust:1.98-bookworm AS builder\n' >"$repo/Dockerfile"
+pin_case "a Dockerfile on another minor fails" 1 "Dockerfile:1:FROM rust:1.98-bookworm"
+
+repo="$(pin_fixture pin-docker-floating)"
+printf 'FROM docker.io/library/rust:1-bookworm AS builder\n' >"$repo/Dockerfile.release"
+pin_case "a floating rust:1 base image fails" 1 "Dockerfile.release:1:"
+
+repo="$(pin_fixture pin-docker-patch)"
+printf 'FROM rust:%s.99-slim\n' "${PIN%.*}" >"$repo/Dockerfile"
+pin_case "a Dockerfile on the pin's minor but another patch fails" 1 "Dockerfile:1:"
+
+repo="$(pin_fixture pin-msrv)"
+printf '[package]\nname = "demo"\nrust-version = "9.0"\n' >"$repo/crates/demo/Cargo.toml"
+pin_case "a rust-version newer than the pin fails" 1 'rust-version = "9.0" (needs a newer Rust'
+
+# A pin that cannot be read is a failure, never a silent pass.
+BROKEN="$WORK/broken-build/validation"
+mkdir -p "$BROKEN" "$WORK/broken-build/cargo"
+cp "$(dirname "$VALIDATE")"/*.sh "$BROKEN/"
+printf '[toolchain]\n' >"$WORK/broken-build/cargo/rust-toolchain.toml"
+repo="$(pin_fixture pin-unreadable)"
+code=0
+( cd "$repo" && PROJECT_ROOT="$repo" bash "$BROKEN/validate.sh" >"$WORK/out" 2>&1 </dev/null ) || code=$?
+if [ "$code" = "1" ] && plain | grep -q "cannot read the fleet Rust pin"; then
+  pass "an unreadable fleet pin fails rather than passing"
+else
+  fail "an unreadable fleet pin did not fail (exit $code)"
+fi
+# build-config's own workflows install the toolchain the satellites' release and tests
+# run on; they name the pin too, so a bump here cannot leave them behind.
+OWN_GITHUB="$(dirname "$VALIDATE")/../.github"
+if [ -d "$OWN_GITHUB" ]; then
+  stale=$(rg -n --no-heading 'dtolnay/rust-toolchain@[^[:space:]]+' "$OWN_GITHUB" | grep -v "rust-toolchain@$PIN\$" || true)
+  if [ -z "$stale" ] && rg -q "dtolnay/rust-toolchain@$PIN" "$OWN_GITHUB"; then
+    pass "build-config's own workflows install the fleet pin"
+  else
+    fail "build-config's own workflows name another toolchain: $stale"
+  fi
 fi
 
 if [ "$failures" -gt 0 ]; then

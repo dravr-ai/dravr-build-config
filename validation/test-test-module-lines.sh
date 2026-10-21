@@ -145,6 +145,8 @@ validate_exit() { # $1 = fixture repo root
 fixture_repo() { # $1 = name, stdin = crates/demo/src/lib.rs
   mkdir -p "$WORK/$1/crates/demo/src"
   cat >"$WORK/$1/crates/demo/src/lib.rs"
+  # validate.sh requires the fleet Rust pin; these fixtures test the scans, not the pin.
+  cp "$SCRIPT_DIR/../cargo/rust-toolchain.toml" "$WORK/$1/rust-toolchain.toml"
   printf '%s\n' "$WORK/$1"
 }
 
