@@ -54,7 +54,9 @@ The script prints the exact commands for this repo. Use the first available meth
 
 Wait until every lane is terminal and green. A cancelled run is not a verdict, and neither is
 a lane that did not run: some repos run a reduced suite for some ref names (dravr-platform
-runs the full PostgreSQL suite on `feature/*` and only an 8-file smoke on `fix/*`).
+runs the full PostgreSQL suite on `feature/*` and `claude/*`, and on a `fix/*` push only when
+it reaches the server's crates). Where a repo publishes one, read the single per-commit
+verdict instead of the lanes: dravr-platform's is `scripts/ci/ci-verdict.sh <sha>`.
 
 ### Step 3: If CI fails
 Fix the cause locally, validate the crate you touched, commit, and push again:
