@@ -345,7 +345,7 @@ jobs:
 EOF
 printf 'runs:\n  steps:\n    - uses: dtolnay/rust-toolchain@%s\n' "$PIN" >"$repo/.github/actions/rust-setup/action.yml"
 printf 'FROM --platform=linux/amd64 rust:%s-slim AS chef\nFROM rust:%s-bookworm\nFROM debian:bookworm-slim\n' "${PIN%.*}" "$PIN" >"$repo/docker/Dockerfile"
-printf '[package]\nname = "demo"\nrust-version = "1.80"\n' >"$repo/crates/demo/Cargo.toml"
+printf '[package]\nname = "demo"\nrust-version = "%s"\n' "${PIN%.*}" >"$repo/crates/demo/Cargo.toml"
 pin_case "every site naming the pin passes" 0 "Rust toolchain pinned to $PIN everywhere"
 
 repo="$(pin_fixture pin-toolchain-file)"
@@ -409,6 +409,27 @@ pin_case "a Dockerfile on the pin's minor but another patch fails" 1 "Dockerfile
 repo="$(pin_fixture pin-msrv)"
 printf '[package]\nname = "demo"\nrust-version = "9.0"\n' >"$repo/crates/demo/Cargo.toml"
 pin_case "a rust-version newer than the pin fails" 1 'rust-version = "9.0" (needs a newer Rust'
+
+repo="$(pin_fixture pin-msrv-older)"
+printf '[package]\nname = "demo"\nrust-version = "1.80"\n' >"$repo/crates/demo/Cargo.toml"
+pin_case "a rust-version older than the pin fails" 1 'rust-version = "1.80" (older than the pin'
+
+repo="$(pin_fixture pin-msrv-full)"
+printf '[package]\nname = "demo"\nrust-version = "%s"\n' "$PIN" >"$repo/crates/demo/Cargo.toml"
+pin_case "a rust-version naming the full pin passes" 0 "Rust toolchain pinned to $PIN everywhere"
+
+repo="$(pin_fixture pin-msrv-missing)"
+printf '[package]\nname = "demo"\nversion = "0.1.0"\n\n[package.metadata.docs]\npublish = false\n' >"$repo/crates/demo/Cargo.toml"
+pin_case "a published package with no rust-version fails" 1 "crates/demo/Cargo.toml: a published [package] with no rust-version"
+
+repo="$(pin_fixture pin-msrv-unpublished)"
+printf '[package]\nname = "demo"\npublish = false\n' >"$repo/crates/demo/Cargo.toml"
+pin_case "an unpublished package needs no rust-version" 0 "Rust toolchain pinned to $PIN everywhere"
+
+repo="$(pin_fixture pin-msrv-workspace)"
+printf '[workspace]\nmembers = ["crates/demo"]\n\n[workspace.package]\nrust-version = "%s"\n' "${PIN%.*}" >"$repo/Cargo.toml"
+printf '[package]\nname = "demo"\nrust-version.workspace = true\n' >"$repo/crates/demo/Cargo.toml"
+pin_case "a package inheriting the workspace rust-version passes" 0 "Rust toolchain pinned to $PIN everywhere"
 
 # A pin that cannot be read is a failure, never a silent pass.
 BROKEN="$WORK/broken-build/validation"

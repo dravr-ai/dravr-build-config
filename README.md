@@ -180,7 +180,7 @@ keeps its own copies of it, and `validation/validate.sh` fails a repo where any 
 | `dtolnay/rust-toolchain@<ref>` anywhere under `.github/` (workflows and composite actions) | `@<pin>`; `@stable`, `@master`, `@nightly` float |
 | a `toolchain:` input, `rustup default/install <x>`, `cargo +<x>` under `.github/` | the pin |
 | `FROM rust:<tag>` in any Dockerfile | `<major.minor>-…` or `<pin>-…` of the pin; `rust:1`, `latest`, `slim` float |
-| `rust-version` in a `Cargo.toml` | not newer than the pin |
+| `rust-version` in a `Cargo.toml` | the pin's `major.minor` (or the full pin); required in every `[package]` not marked `publish = false` |
 
 The repo file is a copy, not a symlink: rustup reads it before `.build` is checked out, and a
 symlink into a missing submodule dangles without an error. Because the check lives in

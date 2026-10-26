@@ -153,6 +153,34 @@ jobs:
           # default GITHUB_TOKEN cannot read another private repo.
           git config --global url."https://x-access-token:${RELEASE_PAT}@github.com/dravr-ai/".insteadOf "https://github.com/dravr-ai/"
 
+      - uses: taiki-e/install-action@v2
+        if: inputs.publish != ''
+        with:
+          # Pinned: each release reads one rustdoc JSON format, and a pin bump that
+          # outruns it refuses the release here rather than passing unchecked.
+          tool: cargo-semver-checks@0.51.0
+
+      - name: Refuse a breaking change the bump does not declare
+        if: inputs.publish != ''
+        env:
+          BUMP: ${{ inputs.bump }}
+          CRATES: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          # Each crate published to crates.io, against its latest published version: a
+          # removed item, a changed signature or a new required field is a major change,
+          # and shipping one as a minor or a patch breaks every consumer whose
+          # requirement admits it (tronc 1.5.0 went out that way and was yanked).
+          for c in ${CRATES}; do
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' -A "dravr-release (github.com/dravr-ai)" \
+                       "https://crates.io/api/v1/crates/${c}")
+            case "${STATUS}" in
+              200) cargo semver-checks check-release -p "${c}" --release-type "${BUMP}" ;;
+              404) echo "::notice::${c} is not on crates.io yet; nothing to compare against" ;;
+              *) echo "::error::crates.io answered ${STATUS} for ${c}; the semver check did not run"; exit 1 ;;
+            esac
+          done
+
       - name: Bump the root crate and its lockstep members
         id: bump
         env:

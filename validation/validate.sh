@@ -718,14 +718,38 @@ else
         PIN_CHECKED=false
     fi
 
+    # rust-version is the oldest Rust a crate says it builds on, and CI builds on the pin
+    # alone, so the pin is the only value any job verifies: a lower one promises toolchains
+    # nothing runs, a higher one cannot build here. Major.minor or the full pin.
     if rg_capture "Cargo rust-version" "$SCAN_TMP/pin-msrv" -n --no-heading -g 'Cargo.toml' \
-        '^[[:space:]]*rust-version[[:space:]]*=[[:space:]]*"[^"]+"' .; then
+        -g '!.build/' -g '!.claude/' '^[[:space:]]*rust-version[[:space:]]*=[[:space:]]*"[^"]+"' .; then
         while IFS= read -r msrv_line; do
             msrv=$(printf '%s\n' "$msrv_line" | sed 's/.*rust-version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/')
             if version_gt "$msrv" "$RUST_PIN"; then
                 echo "$msrv_line (needs a newer Rust than the pin)" >> "$PIN_DRIFT"
+            elif [ "$msrv" != "$RUST_PIN_MINOR" ] && [ "$msrv" != "$RUST_PIN" ]; then
+                echo "$msrv_line (older than the pin, which is the only Rust CI builds — use \"$RUST_PIN_MINOR\")" >> "$PIN_DRIFT"
             fi
         done < "$SCAN_TMP/pin-msrv"
+    else
+        PIN_CHECKED=false
+    fi
+
+    # A crate published to crates.io states it, so an older cargo or a consumer's MSRV-aware
+    # resolver gets an answer rather than a compile error. `publish = false` (or `[]`) opts a
+    # crate out; `rust-version.workspace = true` inherits [workspace.package]'s, checked above.
+    if rg_capture "Cargo manifests" "$SCAN_TMP/pin-manifests" --files -g 'Cargo.toml' \
+        -g '!.build/' -g '!.claude/' .; then
+        while IFS= read -r manifest; do
+            if awk '
+                /^[[:space:]]*\[/ { in_pkg = ($0 ~ /^[[:space:]]*\[package\][[:space:]]*(#.*)?$/); if (in_pkg) pkg = 1; next }
+                in_pkg && /^[[:space:]]*publish[[:space:]]*=[[:space:]]*(false|\[[[:space:]]*\])/ { unpublished = 1 }
+                in_pkg && /^[[:space:]]*rust-version[[:space:]]*=/ { stated = 1 }
+                in_pkg && /^[[:space:]]*rust-version\.workspace[[:space:]]*=[[:space:]]*true/ { stated = 1 }
+                END { exit !(pkg && !unpublished && !stated) }' "$manifest"; then
+                echo "${manifest#./}: a published [package] with no rust-version — add rust-version = \"$RUST_PIN_MINOR\"" >> "$PIN_DRIFT"
+            fi
+        done < "$SCAN_TMP/pin-manifests"
     else
         PIN_CHECKED=false
     fi
