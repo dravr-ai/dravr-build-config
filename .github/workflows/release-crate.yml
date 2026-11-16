@@ -111,7 +111,7 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.100.0
 
       - uses: Swatinem/rust-cache@v2
         if: inputs.check != ''
@@ -414,7 +414,7 @@ jobs:
           # the dangling link without it.
           submodules: recursive
 
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.100.0
 
       - uses: Swatinem/rust-cache@v2
 

@@ -10,5 +10,5 @@
 # A bump: change channel here, land it, then move each repo's .build and its copies
 # together. The README's "Rust toolchain pin" section lists the steps.
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 components = ["clippy", "rustfmt"]
